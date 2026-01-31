@@ -21,7 +21,9 @@ def call(Map config) {
             DISCORD_WEBHOOK = credentials('discord-webhook-url')
             JENKINS_URL_BASE = "https://jenkins.mechacorpsgames.com"
             ANDROID_SDK_ROOT = "/opt/android-sdk"
+            ANDROID_HOME = "/opt/android-sdk"
             ANDROID_NDK_HOME = "/opt/android-sdk/ndk/26.1.10909125"
+            JAVA_HOME = "/usr/lib/jvm/java-17-openjdk-amd64"
             BRANCH_NAME = "${config.branch}"
             DEPLOY_ENV = "${config.environment}"
             SERVER_URL = "${config.serverUrl}"
