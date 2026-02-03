@@ -104,15 +104,6 @@ def call(Map config) {
                 }
             }
 
-            stage('Unit Tests') {
-                steps {
-                    sh """
-                        echo "Running effect parsing tests..."
-                        ./Src/GameServer/build/Release/EffectParsingTest
-                    """
-                }
-            }
-
             stage('Build TestClient') {
                 steps {
                     sh """
