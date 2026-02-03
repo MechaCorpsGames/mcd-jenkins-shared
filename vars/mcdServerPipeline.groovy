@@ -134,6 +134,9 @@ def call(Map config) {
                 steps {
                     sh """
                         mkdir -p ${config.deployPath}
+                        # Kill any running TestClient instances to avoid "Text file busy"
+                        pgrep -f "${config.deployPath}/MCDTestClient" | xargs -r kill 2>/dev/null || true
+                        sleep 1
                         cp Src/TestClient/build/Release/MCDTestClient ${config.deployPath}/MCDTestClient
                         chmod +x ${config.deployPath}/MCDTestClient
                         echo "✓ Deployed TestClient to ${config.environment}"
