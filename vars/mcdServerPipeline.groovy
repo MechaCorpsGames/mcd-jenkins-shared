@@ -93,23 +93,13 @@ def call(Map config) {
                 }
             }
 
-            stage('Build GameServer & Proxy') {
+            stage('Build GameServer, TestClient & Proxy') {
                 steps {
                     sh """
-                        rm -rf bin/versions/v*
+                        rm -rf bin/versions/v* bin/testclient-versions/v*
                         cd Src
                         chmod +x deploy.sh
                         ./deploy.sh --clean --release --build-number ${BUILD_NUMBER}
-                    """
-                }
-            }
-
-            stage('Build TestClient') {
-                steps {
-                    sh """
-                        cd Src/TestClient
-                        chmod +x build.sh
-                        ./build.sh --clean --configure --build --release
                     """
                 }
             }
@@ -118,29 +108,17 @@ def call(Map config) {
                 steps {
                     script {
                         env.SERVER_VERSION_PATH = readFile('bin/versions/latest.txt').trim()
+                        env.TESTCLIENT_VERSION_PATH = readFile('bin/testclient-versions/latest.txt').trim()
                         sh "test -x 'bin/versions/${env.SERVER_VERSION_PATH}'"
+                        sh "test -x 'bin/testclient-versions/${env.TESTCLIENT_VERSION_PATH}'"
                         sh "test -x 'bin/MCDProxy'"
-                        sh "test -x 'Src/TestClient/build/Release/MCDTestClient'"
 
                         env.SERVER_SIZE = sh(script: "du -h bin/versions/${env.SERVER_VERSION_PATH} | cut -f1", returnStdout: true).trim()
+                        env.TESTCLIENT_SIZE = sh(script: "du -h bin/testclient-versions/${env.TESTCLIENT_VERSION_PATH} | cut -f1", returnStdout: true).trim()
                         env.PROXY_SIZE = sh(script: "du -h bin/MCDProxy | cut -f1", returnStdout: true).trim()
 
-                        echo "Build verified: v${env.SERVER_VERSION} (Server: ${env.SERVER_SIZE}, Proxy: ${env.PROXY_SIZE})"
+                        echo "Build verified: v${env.SERVER_VERSION} (Server: ${env.SERVER_SIZE}, TestClient: ${env.TESTCLIENT_SIZE}, Proxy: ${env.PROXY_SIZE})"
                     }
-                }
-            }
-
-            stage('Deploy TestClient') {
-                steps {
-                    sh """
-                        mkdir -p ${config.deployPath}
-                        # Kill any running TestClient instances to avoid "Text file busy"
-                        pgrep -f "${config.deployPath}/MCDTestClient" | xargs -r kill 2>/dev/null || true
-                        sleep 1
-                        cp Src/TestClient/build/Release/MCDTestClient ${config.deployPath}/MCDTestClient
-                        chmod +x ${config.deployPath}/MCDTestClient
-                        echo "✓ Deployed TestClient to ${config.environment}"
-                    """
                 }
             }
 
@@ -154,6 +132,9 @@ def call(Map config) {
 
                             TEST_TCP_PORT=$((30000 + (BUILD_NUMBER % 10000)))
                             TEST_WS_PORT=$((40000 + (BUILD_NUMBER % 10000)))
+
+                            # Get TestClient path from latest.txt
+                            TESTCLIENT_PATH="bin/testclient-versions/$(cat bin/testclient-versions/latest.txt)"
 
                             cleanup() {
                                 echo ""
@@ -181,10 +162,10 @@ def call(Map config) {
                                 exit 1
                             fi
 
-                            ./Src/TestClient/build/Release/MCDTestClient 127.0.0.1 $TEST_TCP_PORT TestBot1 0 --timeout=180 > /tmp/test_client1_${BUILD_NUMBER}.log 2>&1 &
+                            $TESTCLIENT_PATH 127.0.0.1 $TEST_TCP_PORT TestBot1 0 --timeout=180 > /tmp/test_client1_${BUILD_NUMBER}.log 2>&1 &
                             CLIENT1_PID=$!
                             sleep 1
-                            ./Src/TestClient/build/Release/MCDTestClient 127.0.0.1 $TEST_TCP_PORT TestBot2 1 --timeout=180 > /tmp/test_client2_${BUILD_NUMBER}.log 2>&1 &
+                            $TESTCLIENT_PATH 127.0.0.1 $TEST_TCP_PORT TestBot2 1 --timeout=180 > /tmp/test_client2_${BUILD_NUMBER}.log 2>&1 &
                             CLIENT2_PID=$!
 
                             echo "Test clients started (PIDs: $CLIENT1_PID, $CLIENT2_PID)"
@@ -227,8 +208,9 @@ def call(Map config) {
 
                         cp bin/versions/${SERVER_VERSION_PATH} artifacts/server/MCDServer
                         cp bin/MCDProxy artifacts/server/
-                        cp Src/TestClient/build/Release/MCDTestClient artifacts/server/
-                        cp bin/versions/latest.txt artifacts/server/
+                        cp bin/testclient-versions/${TESTCLIENT_VERSION_PATH} artifacts/server/MCDTestClient
+                        cp bin/versions/latest.txt artifacts/server/server-latest.txt
+                        cp bin/testclient-versions/latest.txt artifacts/server/testclient-latest.txt
 
                         COMMIT_SHA_VAL="\${commit_sha:-manual}"
                         COMMIT_AUTHOR_VAL="\${commit_author:-Unknown}"
@@ -294,12 +276,14 @@ EOF
                 }
             }
 
-            stage('Deploy GameServer') {
+            stage('Deploy GameServer & TestClient') {
                 steps {
                     sh """
-                        mkdir -p ${config.deployPath}/versions
+                        mkdir -p ${config.deployPath}/versions ${config.deployPath}/testclient-versions
                         rsync -rlvz --no-group bin/versions/ ${config.deployPath}/versions/
+                        rsync -rlvz --no-group bin/testclient-versions/ ${config.deployPath}/testclient-versions/
                         echo "✓ Deployed GameServer to ${config.environment}: \$(cat ${config.deployPath}/versions/latest.txt)"
+                        echo "✓ Deployed TestClient to ${config.environment}: \$(cat ${config.deployPath}/testclient-versions/latest.txt)"
                     """
                 }
             }
@@ -349,6 +333,8 @@ EOF
                 steps {
                     sh """
                         cd ${config.deployPath}/versions
+                        ls -dt v*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf || true
+                        cd ${config.deployPath}/testclient-versions
                         ls -dt v*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf || true
                         echo "✓ Cleanup complete for ${config.environment}"
                     """
