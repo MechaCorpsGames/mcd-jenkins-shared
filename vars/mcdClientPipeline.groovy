@@ -191,24 +191,6 @@ def call(Map config) {
                             """
                         }
                     }
-
-                    stage('MCDCoreExt Android armeabi-v7a Debug') {
-                        steps {
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --debug --android armeabi-v7a
-                            """
-                        }
-                    }
-
-                    stage('MCDCoreExt Android armeabi-v7a Release') {
-                        steps {
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --release --android armeabi-v7a
-                            """
-                        }
-                    }
                 }
             }
 
@@ -242,11 +224,6 @@ def call(Map config) {
                             test -f bin/lib/Android-arm64-v8a/libMCDCoreExt.so
                             echo "✓ Android arm64-v8a release build"
 
-                            test -f bin/lib/Android-armeabi-v7a/libMCDCoreExt-d.so
-                            echo "✓ Android armeabi-v7a debug build"
-                            test -f bin/lib/Android-armeabi-v7a/libMCDCoreExt.so
-                            echo "✓ Android armeabi-v7a release build"
-
                             echo ""
                             echo "All builds verified successfully!"
                         """
@@ -256,9 +233,8 @@ def call(Map config) {
                         env.WIN_RELEASE_SIZE = sh(script: "du -h bin/lib/Windows-x86_64/MCDCoreExt.dll | cut -f1", returnStdout: true).trim()
                         env.WIN_DEBUG_SIZE = sh(script: "du -h bin/lib/Windows-x86_64/MCDCoreExt-d.dll | cut -f1", returnStdout: true).trim()
                         env.ANDROID_ARM64_SIZE = sh(script: "du -h bin/lib/Android-arm64-v8a/libMCDCoreExt.so | cut -f1", returnStdout: true).trim()
-                        env.ANDROID_ARM32_SIZE = sh(script: "du -h bin/lib/Android-armeabi-v7a/libMCDCoreExt.so | cut -f1", returnStdout: true).trim()
 
-                        echo "Sizes - Linux: ${env.LINUX_RELEASE_SIZE}, Windows: ${env.WIN_RELEASE_SIZE}, Android arm64: ${env.ANDROID_ARM64_SIZE}, Android arm32: ${env.ANDROID_ARM32_SIZE}"
+                        echo "Sizes - Linux: ${env.LINUX_RELEASE_SIZE}, Windows: ${env.WIN_RELEASE_SIZE}, Android arm64: ${env.ANDROID_ARM64_SIZE}"
                     }
                 }
             }
@@ -360,7 +336,7 @@ Author: \$COMMIT_AUTHOR_VAL
 Build Environment: ${BUILD_ENV}
 GCC Version: ${GCC_VERSION}
 CMake Version: ${CMAKE_VERSION}
-Platforms: Linux-x86_64, Windows-x86_64, Android-arm64-v8a, Android-armeabi-v7a
+Platforms: Linux-x86_64, Windows-x86_64, Android-arm64-v8a
 
 Library Sizes:
   Linux Release: ${LINUX_RELEASE_SIZE}
@@ -368,7 +344,6 @@ Library Sizes:
   Windows Release: ${WIN_RELEASE_SIZE}
   Windows Debug: ${WIN_DEBUG_SIZE}
   Android arm64: ${ANDROID_ARM64_SIZE}
-  Android arm32: ${ANDROID_ARM32_SIZE}
 
 Game Executables:
   Windows: ${WIN_EXE_SIZE}
