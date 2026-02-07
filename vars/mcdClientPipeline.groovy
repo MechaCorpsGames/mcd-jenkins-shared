@@ -97,6 +97,23 @@ def call(Map config) {
                 }
             }
 
+            // GDScript-only tests run before builds for fast feedback.
+            // If future tests depend on MCDCoreExt (.so/.dll), add a separate
+            // stage after 'Build Linux' for GDExtension-dependent tests.
+            stage('GDScript Tests') {
+                steps {
+                    sh """
+                        echo "Running GdUnit4 GDScript tests..."
+                        godot --headless -s addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests -c --ignoreHeadlessMode
+                    """
+                }
+                post {
+                    always {
+                        junit allowEmptyResults: true, testResults: 'reports/**/results.xml'
+                    }
+                }
+            }
+
             stage('Build Linux') {
                 stages {
                     stage('MCDCoreExt Linux Debug') {
