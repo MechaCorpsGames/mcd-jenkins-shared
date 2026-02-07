@@ -305,23 +305,11 @@ def call(Map config) {
                     sh """
                         ARTIFACT_BASE="artifacts/${BRANCH_NAME}/v${CLIENT_VERSION}"
 
-                        mkdir -p \${ARTIFACT_BASE}/lib/Linux-x86_64
-                        mkdir -p \${ARTIFACT_BASE}/lib/Windows-x86_64
-                        mkdir -p \${ARTIFACT_BASE}/lib/Android-arm64-v8a
-                        mkdir -p \${ARTIFACT_BASE}/lib/Android-armeabi-v7a
                         mkdir -p \${ARTIFACT_BASE}/game/Windows
                         mkdir -p \${ARTIFACT_BASE}/game/Linux
-                        mkdir -p \${ARTIFACT_BASE}/game/Android
-
-                        cp bin/lib/Linux-x86_64/*.so \${ARTIFACT_BASE}/lib/Linux-x86_64/
-                        cp bin/lib/Windows-x86_64/*.dll \${ARTIFACT_BASE}/lib/Windows-x86_64/
-                        cp bin/lib/Android-arm64-v8a/*.so \${ARTIFACT_BASE}/lib/Android-arm64-v8a/
-                        cp bin/lib/Android-armeabi-v7a/*.so \${ARTIFACT_BASE}/lib/Android-armeabi-v7a/
-                        cp bin/*.gdextension \${ARTIFACT_BASE}/ 2>/dev/null || true
 
                         cp exports/MechaCorpsDraft.exe \${ARTIFACT_BASE}/game/Windows/
                         cp exports/MechaCorpsDraft.x86_64 \${ARTIFACT_BASE}/game/Linux/
-                        cp exports/MechaCorpsDraft.apk \${ARTIFACT_BASE}/game/Android/
 
                         cp bin/lib/Windows-x86_64/MCDCoreExt.dll \${ARTIFACT_BASE}/game/Windows/ 2>/dev/null || \
                             cp bin/lib/Windows-x86_64/libMCDCoreExt.dll \${ARTIFACT_BASE}/game/Windows/MCDCoreExt.dll
@@ -352,14 +340,11 @@ GDEXT
 
                         cd \${ARTIFACT_BASE}/game/Windows && zip -r ../../MechaCorpsDraft-${BRANCH_NAME}-Windows-v${CLIENT_VERSION}.zip . && cd -
                         cd \${ARTIFACT_BASE}/game/Linux && zip -r ../../MechaCorpsDraft-${BRANCH_NAME}-Linux-v${CLIENT_VERSION}.zip . && cd -
-                        cp \${ARTIFACT_BASE}/game/Android/MechaCorpsDraft.apk \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_NAME}-Android-v${CLIENT_VERSION}.apk
+                        cp exports/MechaCorpsDraft.apk \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_NAME}-Android-v${CLIENT_VERSION}.apk
 
                         rm -rf \${ARTIFACT_BASE}/game
 
                         echo "${CLIENT_VERSION}" > \${ARTIFACT_BASE}/latest.txt
-
-                        mkdir -p artifacts/${BRANCH_NAME}
-                        echo "v${CLIENT_VERSION}" > artifacts/${BRANCH_NAME}/latest.txt
 
                         COMMIT_SHA_VAL="\${commit_sha:-manual}"
                         COMMIT_AUTHOR_VAL="\${commit_author:-Unknown}"
@@ -453,7 +438,7 @@ EOF
         post {
             success {
                 script {
-                    def linuxSize = sh(script: "du -h artifacts/${config.branch}/v${env.CLIENT_VERSION}/lib/Linux-x86_64/libMCDCoreExt.so 2>/dev/null | cut -f1 || echo 'N/A'", returnStdout: true).trim()
+                    def linuxSize = sh(script: "du -h bin/lib/Linux-x86_64/libMCDCoreExt.so 2>/dev/null | cut -f1 || echo 'N/A'", returnStdout: true).trim()
                     discordNotify.success(
                         title: "MechaCorps Client Build",
                         message: "✅ MCDCoreExt build succeeded",
