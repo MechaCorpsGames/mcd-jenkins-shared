@@ -122,6 +122,15 @@ def call(Map config) {
                 }
             }
 
+            stage('Unit Tests') {
+                steps {
+                    sh """
+                        cd Src/GameServer
+                        ./build.sh --test --release
+                    """
+                }
+            }
+
             stage('Integration Test') {
                 steps {
                     script {
