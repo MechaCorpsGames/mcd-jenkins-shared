@@ -109,6 +109,8 @@ def call(Map config) {
             stage('GDScript Tests') {
                 steps {
                     sh """
+                        echo "Importing Godot project resources..."
+                        godot --headless --import 2>/dev/null || true
                         echo "Running GdUnit4 GDScript tests..."
                         godot --headless -s addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests -c --ignoreHeadlessMode
                     """
