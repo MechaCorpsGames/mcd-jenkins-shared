@@ -139,7 +139,7 @@ def call(Map config) {
                 }
                 post {
                     always {
-                        junit allowEmptyResults: true, testResults: 'reports/**/results.xml'
+                        junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'reports/**/results.xml'
                     }
                 }
             }
