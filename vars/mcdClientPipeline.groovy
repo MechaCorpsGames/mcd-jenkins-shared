@@ -97,6 +97,12 @@ def call(Map config) {
                 }
             }
 
+            stage('Setup Dependencies') {
+                steps {
+                    sh 'chmod +x scripts/setup-deps.sh && ./scripts/setup-deps.sh'
+                }
+            }
+
             // GDScript-only tests run before builds for fast feedback.
             // If future tests depend on MCDCoreExt (.so/.dll), add a separate
             // stage after 'Build Linux' for GDExtension-dependent tests.
