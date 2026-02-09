@@ -103,25 +103,6 @@ def call(Map config) {
                 }
             }
 
-            // GDScript-only tests run before builds for fast feedback.
-            // If future tests depend on MCDCoreExt (.so/.dll), add a separate
-            // stage after 'Build Linux' for GDExtension-dependent tests.
-            stage('GDScript Tests') {
-                steps {
-                    sh """
-                        echo "Importing Godot project resources..."
-                        godot --headless --import 2>/dev/null || true
-                        echo "Running GdUnit4 GDScript tests..."
-                        godot --headless -s addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests -c --ignoreHeadlessMode
-                    """
-                }
-                post {
-                    always {
-                        junit allowEmptyResults: true, testResults: 'reports/**/results.xml'
-                    }
-                }
-            }
-
             stage('Build Linux') {
                 stages {
                     stage('MCDCoreExt Linux Debug') {
@@ -141,6 +122,24 @@ def call(Map config) {
                                 ./build.sh --clean --configure --build --install --release
                             """
                         }
+                    }
+                }
+            }
+
+            // Tests run after Linux build because they depend on MCDCoreExt
+            // GDExtension classes (e.g. CreateCardIdTestHook, CardId).
+            stage('GDScript Tests') {
+                steps {
+                    sh """
+                        echo "Importing Godot project resources..."
+                        godot --headless --import 2>/dev/null || true
+                        echo "Running GdUnit4 GDScript tests..."
+                        godot --headless -s addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests -c --ignoreHeadlessMode
+                    """
+                }
+                post {
+                    always {
+                        junit allowEmptyResults: true, testResults: 'reports/**/results.xml'
                     }
                 }
             }
