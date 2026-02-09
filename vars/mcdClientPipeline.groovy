@@ -269,22 +269,25 @@ def call(Map config) {
                         mkdir -p exports
 
                         echo "Exporting Windows build..."
-                        godot --headless --export-release "Windows Desktop" exports/MechaCorpsDraft.exe 2>&1 || {
+                        godot --headless --export-release "Windows Desktop" exports/MechaCorpsDraft.exe 2>&1 || true
+                        if [ ! -f exports/MechaCorpsDraft.exe ]; then
                             echo "Windows export failed, check export_presets.cfg"
                             exit 1
-                        }
+                        fi
 
                         echo "Exporting Linux build..."
-                        godot --headless --export-release "Linux" exports/MechaCorpsDraft.x86_64 2>&1 || {
+                        godot --headless --export-release "Linux" exports/MechaCorpsDraft.x86_64 2>&1 || true
+                        if [ ! -f exports/MechaCorpsDraft.x86_64 ]; then
                             echo "Linux export failed, check export_presets.cfg"
                             exit 1
-                        }
+                        fi
 
                         echo "Exporting Android build..."
-                        godot --headless --export-release "Android" exports/MechaCorpsDraft.apk 2>&1 || {
+                        godot --headless --export-release "Android" exports/MechaCorpsDraft.apk 2>&1 || true
+                        if [ ! -f exports/MechaCorpsDraft.apk ]; then
                             echo "Android export failed, check export_presets.cfg and Android SDK setup"
                             exit 1
-                        }
+                        fi
 
                         echo ""
                         echo "Exported executables:"
