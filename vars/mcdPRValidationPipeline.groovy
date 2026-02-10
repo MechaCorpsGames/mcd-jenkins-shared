@@ -102,6 +102,18 @@ def call(Map config) {
                 }
             }
 
+            // MCDCoreExt Linux debug must be built before GDScript tests
+            // because tests depend on GDExtension types (CardId, etc.)
+            stage('Build MCDCoreExt Linux (for tests)') {
+                steps {
+                    sh """
+                        cd Src/MCDCoreExt
+                        chmod +x build.sh
+                        ./build.sh --clean --configure --build --install --debug
+                    """
+                }
+            }
+
             stage('GDScript Tests') {
                 steps {
                     sh """
@@ -380,7 +392,7 @@ def call(Map config) {
 
                     def buildUrl = "${env.JENKINS_URL_BASE}/job/${config.jobName}/${BUILD_NUMBER}/console"
                     discordNotify.simple(
-                        "❌ PR #${env.pr_number} ${tier} failed at ${failedStage} — ${env.pr_head_ref} → ${config.targetBranch}\n[View Console](${buildUrl})",
+                        "❌ PR #${env.pr_number} ${tier} failed at ${failedStage} — ${env.pr_head_ref} → ${config.targetBranch} — View: ${buildUrl}",
                         "15158332"
                     )
                 }
