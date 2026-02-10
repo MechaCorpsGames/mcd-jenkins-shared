@@ -93,6 +93,7 @@ def call(Map config) {
 
             stage('Checkout') {
                 steps {
+                    cleanWs()
                     checkout scm
                 }
             }
