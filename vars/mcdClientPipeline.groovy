@@ -131,6 +131,7 @@ def call(Map config) {
             stage('GDScript Tests') {
                 steps {
                     sh """
+                        rm -rf reports/
                         echo "Importing Godot project resources..."
                         godot --headless --import 2>/dev/null || true
                         echo "Running GdUnit4 GDScript tests..."
