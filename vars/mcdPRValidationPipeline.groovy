@@ -30,6 +30,9 @@ def call(Map config) {
             GITHUB_STATUS_TOKEN = credentials('github-status-token')
             JENKINS_URL_BASE = "https://jenkins.mechacorpsgames.com"
             TARGET_BRANCH = "${config.targetBranch}"
+            ANDROID_SDK_ROOT = "/opt/android-sdk"
+            ANDROID_HOME = "/opt/android-sdk"
+            ANDROID_NDK_HOME = "/opt/android-sdk/ndk/26.1.10909125"
         }
 
         triggers {
