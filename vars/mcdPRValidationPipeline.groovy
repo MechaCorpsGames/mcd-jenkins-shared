@@ -90,6 +90,24 @@ def call(Map config) {
                             returnStatus: true
                         )
                         if (fetchResult != 0) {
+                            // Merge ref missing — check if the PR was already merged/closed
+                            def prMerged = sh(
+                                script: """
+                                    curl -s -H "Authorization: token \$GITHUB_STATUS_TOKEN" \
+                                        -H "Accept: application/vnd.github.v3+json" \
+                                        "https://api.github.com/repos/${env.repo_full_name}/pulls/${env.pr_number}" \
+                                        | python3 -c "import sys,json; pr=json.load(sys.stdin); print('merged' if pr.get('merged') else 'not_merged')"
+                                """,
+                                returnStdout: true
+                            ).trim()
+
+                            if (prMerged == 'merged') {
+                                echo "PR #${env.pr_number} was already merged — skipping validation."
+                                setGitHubStatus('success', 'Skipped — PR already merged', statusContext)
+                                currentBuild.result = 'NOT_BUILT'
+                                env.PR_ALREADY_MERGED = 'true'
+                                return
+                            }
                             setGitHubStatus('failure', 'Merge conflict — cannot merge cleanly', statusContext)
                             error("Failed to fetch PR merge ref. The PR likely has merge conflicts with ${config.targetBranch}.")
                         }
@@ -100,6 +118,7 @@ def call(Map config) {
             }
 
             stage('Setup Dependencies') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
                 steps {
                     sh 'chmod +x scripts/setup-deps.sh && ./scripts/setup-deps.sh'
                 }
@@ -108,6 +127,7 @@ def call(Map config) {
             // MCDCoreExt Linux debug must be built before GDScript tests
             // because tests depend on GDExtension types (CardId, etc.)
             stage('Build MCDCoreExt Linux (for tests)') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
                 steps {
                     sh """
                         cd Src/MCDCoreExt
@@ -118,6 +138,7 @@ def call(Map config) {
             }
 
             stage('GDScript Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
                 steps {
                     sh """
                         rm -rf reports/
@@ -135,6 +156,7 @@ def call(Map config) {
             }
 
             stage('Build GameServer, TestClient & Proxy') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
                 steps {
                     sh """
                         rm -rf bin/versions/v* bin/testclient-versions/v*
@@ -146,6 +168,7 @@ def call(Map config) {
             }
 
             stage('Verify Server Build') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
                 steps {
                     script {
                         env.SERVER_VERSION_PATH = readFile('bin/versions/latest.txt').trim()
@@ -159,6 +182,7 @@ def call(Map config) {
             }
 
             stage('Unit Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
                 steps {
                     sh """
                         cd Src/GameServer
@@ -168,6 +192,7 @@ def call(Map config) {
             }
 
             stage('Integration Test') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
                 steps {
                     script {
                         def testResult = sh(script: '''
@@ -247,7 +272,7 @@ def call(Map config) {
 
             // Release PRs: full multi-platform MCDCoreExt build
             stage('Build MCDCoreExt (Linux)') {
-                when { expression { config.targetBranch == 'release' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' } }
                 stages {
                     stage('MCDCoreExt Linux Debug') {
                         steps {
@@ -270,7 +295,7 @@ def call(Map config) {
             }
 
             stage('Build MCDCoreExt (Windows Cross-compile)') {
-                when { expression { config.targetBranch == 'release' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' } }
                 stages {
                     stage('Setup MinGW OpenSSL') {
                         steps {
@@ -321,7 +346,7 @@ def call(Map config) {
             }
 
             stage('Build MCDCoreExt (Android Cross-compile)') {
-                when { expression { config.targetBranch == 'release' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' } }
                 stages {
                     stage('MCDCoreExt Android arm64-v8a Debug') {
                         steps {
@@ -343,7 +368,7 @@ def call(Map config) {
             }
 
             stage('Verify All Platform Builds') {
-                when { expression { config.targetBranch == 'release' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' } }
                 steps {
                     sh """
                         echo "=== Linux Builds ==="
@@ -376,6 +401,10 @@ def call(Map config) {
         post {
             success {
                 script {
+                    if (env.PR_ALREADY_MERGED == 'true') {
+                        echo "PR was already merged — no validation performed."
+                        return
+                    }
                     def duration = currentBuild.durationString.replace(' and counting', '')
                     def tier = (config.targetBranch == 'release') ? 'Full validation' : 'Validation'
                     setGitHubStatus('success', "${tier} passed (${duration})", statusContext)
