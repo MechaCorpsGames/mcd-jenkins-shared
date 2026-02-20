@@ -84,6 +84,9 @@ def call(Map config) {
             stage('Checkout PR Merge Ref') {
                 steps {
                     checkout scm
+                    // Clean untracked files so stale .uid / generated files
+                    // from a previous build can't block the PR checkout
+                    sh 'git clean -fdx'
                     script {
                         def fetchResult = sh(
                             script: "git fetch origin +refs/pull/${env.pr_number}/merge:refs/remotes/origin/pr/${env.pr_number}/merge",
