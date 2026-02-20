@@ -245,6 +245,28 @@ EOF
                 }
             }
 
+            stage('Upload Debug Symbols') {
+                when {
+                    expression { return fileExists('bin/versions') }
+                }
+                steps {
+                    script {
+                        def sentryCliExists = sh(script: 'which sentry-cli', returnStatus: true) == 0
+                        if (sentryCliExists) {
+                            sh """
+                                sentry-cli --url \${SENTRY_URL:-https://crashes.mechacorpsgames.com} \
+                                    upload-dif --org mechacorps --project mcd-server \
+                                    bin/versions/ \
+                                    Src/GameServer/build/ \
+                                    || echo "⚠️ Symbol upload failed (non-fatal)"
+                            """
+                        } else {
+                            echo "sentry-cli not installed, skipping symbol upload"
+                        }
+                    }
+                }
+            }
+
             stage('Generate Server Manifest') {
                 steps {
                     script {

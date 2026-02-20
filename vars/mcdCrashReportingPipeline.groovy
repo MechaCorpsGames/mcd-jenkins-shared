@@ -39,7 +39,7 @@ def call(Map config) {
                 printPostContent: false,
                 silentResponse: false,
                 regexpFilterText: '$ref $changed_files',
-                regexpFilterExpression: "refs/heads/${config.branch}.*(Src/CrashReporting|Src/docker-compose\\.crash-reporting|Src/Shared).*"
+                regexpFilterExpression: "refs/heads/${config.branch}.*(Src/CrashReporting|Src/MCPServer|Src/docker-compose\\.crash-reporting|Src/Shared).*"
             )
         }
 
@@ -71,23 +71,26 @@ def call(Map config) {
                 }
             }
 
-            stage('Build Go Binary') {
+            stage('Build Go Binaries') {
                 steps {
                     sh """
                         cd Src/CrashReporting
                         CGO_ENABLED=0 GOOS=linux go build -o crash-reporting .
-                        echo "✓ Go binary built"
-                        ls -lh crash-reporting
+                        echo "✓ CrashReporting binary built"
+
+                        cd ../MCPServer
+                        CGO_ENABLED=0 GOOS=linux go build -o mcp-server .
+                        echo "✓ MCPServer binary built"
                     """
                 }
             }
 
-            stage('Build Docker Image') {
+            stage('Build Docker Images') {
                 steps {
                     sh """
                         cd Src
-                        docker-compose -f docker-compose.crash-reporting.yml -p ${COMPOSE_PROJECT} build crash-reporting
-                        echo "✓ Docker image built"
+                        docker-compose -f docker-compose.crash-reporting.yml -p ${COMPOSE_PROJECT} build crash-reporting mcp-server
+                        echo "✓ Docker images built"
                     """
                 }
             }
@@ -113,17 +116,27 @@ def call(Map config) {
                     script {
                         def healthResult = sh(script: '''
                             set +e
-                            for i in $(seq 1 10); do
-                                RESULT=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/health)
-                                if [ "$RESULT" = "200" ]; then
-                                    echo "✓ Log Bundler health check passed"
-                                    exit 0
+                            PASS=true
+                            for SVC in "Log Bundler:8090" "MCP Server:8095"; do
+                                NAME="${SVC%%:*}"
+                                PORT="${SVC##*:}"
+                                OK=false
+                                for i in $(seq 1 10); do
+                                    RESULT=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$PORT/health)
+                                    if [ "$RESULT" = "200" ]; then
+                                        echo "✓ $NAME health check passed"
+                                        OK=true
+                                        break
+                                    fi
+                                    echo "Waiting for $NAME... (attempt $i/10)"
+                                    sleep 3
+                                done
+                                if [ "$OK" = "false" ]; then
+                                    echo "✗ $NAME health check failed"
+                                    PASS=false
                                 fi
-                                echo "Waiting for Log Bundler... (attempt $i/10)"
-                                sleep 3
                             done
-                            echo "✗ Log Bundler health check failed"
-                            exit 1
+                            [ "$PASS" = "true" ] && exit 0 || exit 1
                         ''', returnStatus: true)
 
                         if (healthResult != 0) {
@@ -140,7 +153,7 @@ def call(Map config) {
                 script {
                     discordNotify.success(
                         title: "Crash Reporting Deploy",
-                        message: "✅ Log Bundler v${env.CR_VERSION} deployed",
+                        message: "✅ Log Bundler + MCP Server v${env.CR_VERSION} deployed",
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
                         environment: "production",

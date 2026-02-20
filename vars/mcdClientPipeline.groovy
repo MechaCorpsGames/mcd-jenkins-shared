@@ -437,6 +437,28 @@ EOF
                     archiveArtifacts artifacts: 'artifacts/**/*', fingerprint: true
                 }
             }
+
+            stage('Upload Debug Symbols') {
+                steps {
+                    script {
+                        def sentryCliExists = sh(script: 'which sentry-cli', returnStatus: true) == 0
+                        if (sentryCliExists) {
+                            sh """
+                                echo "Uploading debug symbols for all platforms..."
+                                sentry-cli --url \${SENTRY_URL:-https://crashes.mechacorpsgames.com} \
+                                    upload-dif --org mechacorps --project mcd-client \
+                                    bin/lib/ \
+                                    Src/MCDCoreExt/build/ \
+                                    Src/MCDCoreExt/build-windows/ \
+                                    Src/MCDCoreExt/build-android/ \
+                                    || echo "⚠️ Symbol upload failed (non-fatal)"
+                            """
+                        } else {
+                            echo "sentry-cli not installed, skipping symbol upload"
+                        }
+                    }
+                }
+            }
         }
 
         post {
