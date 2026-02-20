@@ -326,32 +326,34 @@ EOF
                         def oldHash = sh(script: "sha256sum ${config.deployPath}/MCDProxy 2>/dev/null | cut -d' ' -f1 || echo 'none'", returnStdout: true).trim()
 
                         if (newHash != oldHash) {
-                            echo "⚠️ Proxy binary changed - initiating hot-swap for ${config.environment}"
-                            discordNotify.simple("🔄 ${config.environment.capitalize()} proxy hot-swap in progress", "16776960")
+                            echo "⚠️ Proxy binary changed - rebuilding Docker container for ${config.environment}"
+                            discordNotify.simple("🔄 ${config.environment.capitalize()} proxy container rebuild in progress", "16776960")
 
                             sh """
-                                sudo systemctl stop mcdproxy-${config.branch} || true
                                 cp bin/MCDProxy ${config.deployPath}/MCDProxy
                                 chmod +x ${config.deployPath}/MCDProxy
-                                sudo systemctl start mcdproxy-${config.branch}
 
-                                sleep 2
-                                if systemctl is-active --quiet mcdproxy-${config.branch}; then
-                                    echo "✓ ${config.environment} proxy restarted successfully via systemd"
+                                cd /var/opt/mechacorpsgames/Src
+                                docker-compose -f docker-compose.proxy.yml --env-file .env.proxy up -d --build --force-recreate proxy
+
+                                sleep 3
+                                if docker ps --filter 'name=src_proxy_1' --format '{{.Status}}' | grep -q 'Up'; then
+                                    echo "✓ ${config.environment} proxy container restarted successfully"
                                 else
-                                    echo "✗ Failed to start mcdproxy-${config.branch}"
-                                    systemctl status mcdproxy-${config.branch} || true
+                                    echo "✗ Failed to start proxy container"
+                                    docker logs src_proxy_1 --tail 20 2>&1 || true
                                     exit 1
                                 fi
                             """
                             env.PROXY_DEPLOYED = "true"
                         } else {
                             sh """
-                                if ! systemctl is-active --quiet mcdproxy-${config.branch}; then
-                                    echo "Proxy not running, starting mcdproxy-${config.branch}..."
-                                    sudo systemctl start mcdproxy-${config.branch}
+                                if ! docker ps --filter 'name=src_proxy_1' --format '{{.Status}}' | grep -q 'Up'; then
+                                    echo "Proxy container not running, starting..."
+                                    cd /var/opt/mechacorpsgames/Src
+                                    docker-compose -f docker-compose.proxy.yml --env-file .env.proxy up -d proxy
                                 else
-                                    echo "✓ Proxy unchanged and already running"
+                                    echo "✓ Proxy unchanged and container already running"
                                 fi
                             """
                             env.PROXY_DEPLOYED = "false"
