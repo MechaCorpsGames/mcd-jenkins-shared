@@ -334,14 +334,12 @@ EOF
                             discordNotify.simple("🔄 ${config.environment.capitalize()} proxy container rebuild in progress", "16776960")
 
                             sh """
-                                # Kill any bare-metal proxy still holding our ports
-                                LEGACY_PID=\$(pgrep -f "${config.deployPath}/MCDProxy" || true)
-                                if [ -n "\$LEGACY_PID" ]; then
-                                    echo "⚠️ Killing legacy bare-metal proxy (PID: \$LEGACY_PID) on ports ${config.tcpPort}/${config.wsPort}"
-                                    kill \$LEGACY_PID || true
-                                    sleep 2
-                                fi
+                                # Stop systemd proxy service and legacy containers holding our ports
+                                sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
+                                sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
+                                docker rm -f src_proxy_1 2>/dev/null || true
 
+                                rm -f ${config.deployPath}/MCDProxy
                                 cp bin/MCDProxy ${config.deployPath}/MCDProxy
                                 chmod +x ${config.deployPath}/MCDProxy
 
@@ -363,13 +361,10 @@ EOF
                                 if ! docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
                                     echo "Proxy container not running, starting..."
 
-                                    # Kill any bare-metal proxy still holding our ports
-                                    LEGACY_PID=\$(pgrep -f "${config.deployPath}/MCDProxy" || true)
-                                    if [ -n "\$LEGACY_PID" ]; then
-                                        echo "⚠️ Killing legacy bare-metal proxy (PID: \$LEGACY_PID)"
-                                        kill \$LEGACY_PID || true
-                                        sleep 2
-                                    fi
+                                    # Stop systemd proxy service and legacy containers holding our ports
+                                    sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
+                                    sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
+                                    docker rm -f src_proxy_1 2>/dev/null || true
 
                                     cd /var/opt/mechacorpsgames/Src
                                     docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d proxy
