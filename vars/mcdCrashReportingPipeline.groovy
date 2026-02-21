@@ -101,6 +101,8 @@ def call(Map config) {
                 steps {
                     sh """
                         cd Src
+                        # Stop legacy 'src' project mcp-server if it holds the port
+                        docker rm -f src_mcp-server_1 2>/dev/null || true
                         docker-compose -f docker-compose.crash-reporting.yml -p ${COMPOSE_PROJECT} up -d
                         echo "✓ Stack deployed"
 
