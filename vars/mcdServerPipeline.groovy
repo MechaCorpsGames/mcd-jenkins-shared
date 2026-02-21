@@ -322,6 +322,10 @@ EOF
             stage('Deploy Proxy (if changed)') {
                 steps {
                     script {
+                        def envFile = config.proxyEnvFile ?: '.env.proxy'
+                        def composeProject = config.proxyProject ?: 'src'
+                        def containerName = "${composeProject}_proxy_1"
+
                         def newHash = sh(script: "sha256sum bin/MCDProxy | cut -d' ' -f1", returnStdout: true).trim()
                         def oldHash = sh(script: "sha256sum ${config.deployPath}/MCDProxy 2>/dev/null | cut -d' ' -f1 || echo 'none'", returnStdout: true).trim()
 
@@ -334,24 +338,24 @@ EOF
                                 chmod +x ${config.deployPath}/MCDProxy
 
                                 cd /var/opt/mechacorpsgames/Src
-                                docker-compose -f docker-compose.proxy.yml --env-file .env.proxy up -d --build --force-recreate proxy
+                                docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --build --force-recreate proxy
 
                                 sleep 3
-                                if docker ps --filter 'name=src_proxy_1' --format '{{.Status}}' | grep -q 'Up'; then
+                                if docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
                                     echo "✓ ${config.environment} proxy container restarted successfully"
                                 else
                                     echo "✗ Failed to start proxy container"
-                                    docker logs src_proxy_1 --tail 20 2>&1 || true
+                                    docker logs ${containerName} --tail 20 2>&1 || true
                                     exit 1
                                 fi
                             """
                             env.PROXY_DEPLOYED = "true"
                         } else {
                             sh """
-                                if ! docker ps --filter 'name=src_proxy_1' --format '{{.Status}}' | grep -q 'Up'; then
+                                if ! docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
                                     echo "Proxy container not running, starting..."
                                     cd /var/opt/mechacorpsgames/Src
-                                    docker-compose -f docker-compose.proxy.yml --env-file .env.proxy up -d proxy
+                                    docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d proxy
                                 else
                                     echo "✓ Proxy unchanged and container already running"
                                 fi
