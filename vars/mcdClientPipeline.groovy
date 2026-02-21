@@ -33,6 +33,7 @@ def call(Map config) {
             BRANCH_NAME = "${config.branch}"
             DEPLOY_ENV = "${config.environment}"
             SERVER_URL = "${config.serverUrl}"
+            BUILD_PHASE = "Initializing"
         }
 
         triggers {
@@ -59,6 +60,7 @@ def call(Map config) {
             stage('Setup Build Info') {
                 steps {
                     script {
+                        env.BUILD_PHASE = 'Setup Build Info'
                         env.CLIENT_VERSION = "0.1.${BUILD_NUMBER}"
 
                         def shortSha = env.commit_sha ? env.commit_sha.take(7) : 'manual'
@@ -93,6 +95,7 @@ def call(Map config) {
 
             stage('Checkout') {
                 steps {
+                    script { env.BUILD_PHASE = 'Checkout' }
                     cleanWs()
                     checkout scm
                 }
@@ -100,6 +103,7 @@ def call(Map config) {
 
             stage('Setup Dependencies') {
                 steps {
+                    script { env.BUILD_PHASE = 'Setup Dependencies' }
                     sh 'chmod +x scripts/setup-deps.sh && ./scripts/setup-deps.sh'
                 }
             }
@@ -108,6 +112,7 @@ def call(Map config) {
                 stages {
                     stage('MCDCoreExt Linux Debug') {
                         steps {
+                            script { env.BUILD_PHASE = 'MCDCoreExt Linux Debug' }
                             sh """
                                 cd Src/MCDCoreExt
                                 chmod +x build.sh
@@ -118,6 +123,7 @@ def call(Map config) {
 
                     stage('MCDCoreExt Linux Release') {
                         steps {
+                            script { env.BUILD_PHASE = 'MCDCoreExt Linux Release' }
                             sh """
                                 cd Src/MCDCoreExt
                                 ./build.sh --clean --configure --build --install --release --server-url ${SERVER_URL}
@@ -131,6 +137,7 @@ def call(Map config) {
             // GDExtension classes (e.g. CreateCardIdTestHook, CardId).
             stage('GDScript Tests') {
                 steps {
+                    script { env.BUILD_PHASE = 'GDScript Tests' }
                     sh """
                         rm -rf reports/
                         echo "Importing Godot project resources..."
@@ -150,6 +157,7 @@ def call(Map config) {
                 stages {
                     stage('Setup MinGW OpenSSL') {
                         steps {
+                            script { env.BUILD_PHASE = 'Setup MinGW OpenSSL' }
                             sh """
                                 OPENSSL_DIR=Src/External/mingw-openssl
                                 if [ ! -d "\${OPENSSL_DIR}/mingw64/include/openssl" ]; then
@@ -180,6 +188,7 @@ def call(Map config) {
 
                     stage('MCDCoreExt Windows Debug') {
                         steps {
+                            script { env.BUILD_PHASE = 'MCDCoreExt Windows Debug' }
                             sh """
                                 cd Src/MCDCoreExt
                                 ./build.sh --clean --configure --build --install --debug --windows --server-url ${SERVER_URL}
@@ -189,6 +198,7 @@ def call(Map config) {
 
                     stage('MCDCoreExt Windows Release') {
                         steps {
+                            script { env.BUILD_PHASE = 'MCDCoreExt Windows Release' }
                             sh """
                                 cd Src/MCDCoreExt
                                 ./build.sh --clean --configure --build --install --release --windows --server-url ${SERVER_URL}
@@ -202,6 +212,7 @@ def call(Map config) {
                 stages {
                     stage('MCDCoreExt Android arm64-v8a Debug') {
                         steps {
+                            script { env.BUILD_PHASE = 'MCDCoreExt Android arm64-v8a Debug' }
                             sh """
                                 cd Src/MCDCoreExt
                                 ./build.sh --clean --configure --build --install --debug --android arm64-v8a --server-url ${SERVER_URL}
@@ -211,6 +222,7 @@ def call(Map config) {
 
                     stage('MCDCoreExt Android arm64-v8a Release') {
                         steps {
+                            script { env.BUILD_PHASE = 'MCDCoreExt Android arm64-v8a Release' }
                             sh """
                                 cd Src/MCDCoreExt
                                 ./build.sh --clean --configure --build --install --release --android arm64-v8a --server-url ${SERVER_URL}
@@ -223,6 +235,7 @@ def call(Map config) {
             stage('Verify Builds') {
                 steps {
                     script {
+                        env.BUILD_PHASE = 'Verify Builds'
                         sh """
                             echo "=== Linux Builds ==="
                             test -f bin/lib/Linux-x86_64/libMCDCoreExt-d.so
@@ -267,6 +280,7 @@ def call(Map config) {
 
             stage('Export Game Executables') {
                 steps {
+                    script { env.BUILD_PHASE = 'Export Game Executables' }
                     sh """
                         mkdir -p exports
 
@@ -307,6 +321,8 @@ def call(Map config) {
 
             stage('Stage Artifacts') {
                 steps {
+                    script { env.BUILD_PHASE = 'Stage Artifacts' }
+                    retry(2) {
                     sh """
                         ARTIFACT_BASE="artifacts/${BRANCH_NAME}/v${CLIENT_VERSION}"
 
@@ -384,12 +400,14 @@ EOF
                         echo "Artifacts (${BRANCH_NAME}/v${CLIENT_VERSION}):"
                         find artifacts -type f | sort
                     """
+                    } // retry
                 }
             }
 
             stage('Generate Compatibility Manifest') {
                 steps {
                     script {
+                        env.BUILD_PHASE = 'Generate Compatibility Manifest'
                         def protocolVersion = sh(
                             script: "grep -oP 'PROTOCOL_VERSION\\s*=\\s*\\K[0-9]+' Src/Include/protocol_ext.h || echo '1'",
                             returnStdout: true
@@ -434,6 +452,7 @@ EOF
 
             stage('Archive Artifacts') {
                 steps {
+                    script { env.BUILD_PHASE = 'Archive Artifacts' }
                     archiveArtifacts artifacts: 'artifacts/**/*', fingerprint: true
                 }
             }
@@ -441,6 +460,7 @@ EOF
             stage('Upload Debug Symbols') {
                 steps {
                     script {
+                        env.BUILD_PHASE = 'Upload Debug Symbols'
                         def sentryCliExists = sh(script: 'which sentry-cli', returnStatus: true) == 0
                         if (sentryCliExists) {
                             sh """
@@ -480,9 +500,10 @@ EOF
             }
             failure {
                 script {
+                    def failedPhase = env.BUILD_PHASE ?: 'Unknown'
                     discordNotify.failure(
                         title: "MechaCorps Client Build",
-                        message: "❌ MCDCoreExt build failed",
+                        message: "❌ Build failed at: ${failedPhase}",
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
                         environment: config.environment,
