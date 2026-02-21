@@ -338,6 +338,9 @@ EOF
                                 cp bin/MCDProxy ${config.deployPath}/MCDProxy
                                 chmod +x ${config.deployPath}/MCDProxy
 
+                                # Stop legacy 'src' project proxy if it holds the port
+                                docker rm -f src_proxy_1 2>/dev/null || true
+
                                 cd /var/opt/mechacorpsgames/Src
                                 docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --build --force-recreate proxy
 
