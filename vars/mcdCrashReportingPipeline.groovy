@@ -21,6 +21,8 @@ def call(Map config) {
             BRANCH_NAME = "${config.branch}"
             COMPOSE_FILE = "Src/docker-compose.crash-reporting.yml"
             COMPOSE_PROJECT = "mcd-crash-reporting"
+            GOROOT = "/home/tim/go-1.24/go"
+            PATH = "/home/tim/go-1.24/go/bin:${env.PATH}"
         }
 
         triggers {
