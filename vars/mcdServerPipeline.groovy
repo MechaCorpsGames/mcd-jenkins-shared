@@ -334,6 +334,7 @@ EOF
                             discordNotify.simple("🔄 ${config.environment.capitalize()} proxy container rebuild in progress", "16776960")
 
                             sh """
+                                rm -f ${config.deployPath}/MCDProxy
                                 cp bin/MCDProxy ${config.deployPath}/MCDProxy
                                 chmod +x ${config.deployPath}/MCDProxy
 
