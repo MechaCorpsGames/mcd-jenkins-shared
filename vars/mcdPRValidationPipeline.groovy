@@ -88,12 +88,20 @@ def call(Map config) {
                     // from a previous build can't block the PR checkout
                     sh 'git clean -fdx'
                     script {
-                        def fetchResult = sh(
-                            script: "git fetch origin +refs/pull/${env.pr_number}/merge:refs/remotes/origin/pr/${env.pr_number}/merge",
+                        // Local merge: fetch target branch + PR head, then merge locally.
+                        // GitHub's refs/pull/NNN/merge can be stale when the webhook fires
+                        // before GitHub regenerates the ref (caused build #57 failure).
+                        sh "git fetch origin +refs/heads/${config.targetBranch}:refs/remotes/origin/${config.targetBranch}"
+                        sh "git fetch origin ${env.pr_head_sha}"
+                        sh "git checkout refs/remotes/origin/${config.targetBranch}"
+
+                        def mergeResult = sh(
+                            script: "git merge --no-edit ${env.pr_head_sha}",
                             returnStatus: true
                         )
-                        if (fetchResult != 0) {
-                            // Merge ref missing — check if the PR was already merged/closed
+                        if (mergeResult != 0) {
+                            // Merge failed — check if the PR was already merged/closed
+                            sh 'git merge --abort || true'
                             def prMerged = sh(
                                 script: """
                                     curl -s -H "Authorization: token \$GITHUB_STATUS_TOKEN" \
@@ -112,10 +120,9 @@ def call(Map config) {
                                 return
                             }
                             setGitHubStatus('failure', 'Merge conflict — cannot merge cleanly', statusContext)
-                            error("Failed to fetch PR merge ref. The PR likely has merge conflicts with ${config.targetBranch}.")
+                            error("PR #${env.pr_number} has merge conflicts with ${config.targetBranch}.")
                         }
-                        sh "git checkout refs/remotes/origin/pr/${env.pr_number}/merge"
-                        echo "Checked out PR #${env.pr_number} merge ref (merged into ${config.targetBranch})"
+                        echo "Checked out PR #${env.pr_number} (${env.pr_head_sha.take(7)}) merged into ${config.targetBranch}"
                     }
                 }
             }
@@ -422,12 +429,11 @@ def call(Map config) {
                 script {
                     def duration = currentBuild.durationString.replace(' and counting', '')
                     def tier = (config.targetBranch == 'release') ? 'Full validation' : 'Validation'
-                    def failedStage = env.STAGE_NAME ?: 'unknown'
-                    setGitHubStatus('failure', "${tier} failed at ${failedStage}", statusContext)
+                    setGitHubStatus('failure', "${tier} failed (${duration})", statusContext)
 
                     def buildUrl = "${env.JENKINS_URL_BASE}/job/${config.jobName}/${BUILD_NUMBER}/console"
                     discordNotify.simple(
-                        "❌ PR #${env.pr_number} ${tier} failed at ${failedStage} — ${env.pr_head_ref} → ${config.targetBranch} — View: ${buildUrl}",
+                        "❌ PR #${env.pr_number} ${tier} failed — ${env.pr_head_ref} → ${config.targetBranch} — View: ${buildUrl}",
                         "15158332"
                     )
                 }
