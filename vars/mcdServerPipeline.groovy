@@ -334,12 +334,16 @@ EOF
                             discordNotify.simple("🔄 ${config.environment.capitalize()} proxy container rebuild in progress", "16776960")
 
                             sh """
-                                rm -f ${config.deployPath}/MCDProxy
+                                # Kill any bare-metal proxy still holding our ports
+                                LEGACY_PID=\$(pgrep -f "${config.deployPath}/MCDProxy" || true)
+                                if [ -n "\$LEGACY_PID" ]; then
+                                    echo "⚠️ Killing legacy bare-metal proxy (PID: \$LEGACY_PID) on ports ${config.tcpPort}/${config.wsPort}"
+                                    kill \$LEGACY_PID || true
+                                    sleep 2
+                                fi
+
                                 cp bin/MCDProxy ${config.deployPath}/MCDProxy
                                 chmod +x ${config.deployPath}/MCDProxy
-
-                                # Stop legacy 'src' project proxy if it holds the port
-                                docker rm -f src_proxy_1 2>/dev/null || true
 
                                 cd /var/opt/mechacorpsgames/Src
                                 docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --build --force-recreate proxy
@@ -358,6 +362,15 @@ EOF
                             sh """
                                 if ! docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
                                     echo "Proxy container not running, starting..."
+
+                                    # Kill any bare-metal proxy still holding our ports
+                                    LEGACY_PID=\$(pgrep -f "${config.deployPath}/MCDProxy" || true)
+                                    if [ -n "\$LEGACY_PID" ]; then
+                                        echo "⚠️ Killing legacy bare-metal proxy (PID: \$LEGACY_PID)"
+                                        kill \$LEGACY_PID || true
+                                        sleep 2
+                                    fi
+
                                     cd /var/opt/mechacorpsgames/Src
                                     docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d proxy
                                 else
