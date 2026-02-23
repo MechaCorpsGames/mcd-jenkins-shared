@@ -1,10 +1,39 @@
 // Discord notification helpers for MechaCorps CI/CD pipelines
 
+// GitHub username → Discord user ID mapping
+// Keep in sync with .github/discord-users.json
+def discordUsers() {
+    return [
+        'wajulius':    '289448040253751296',
+        'trowsey':     '354141124463427597',
+        'Connor-McC':  '579530510049476610',
+        'Omegasythe':  '368986727085244427',
+        'research00':  '270155485745905665'
+    ]
+}
+
+/**
+ * Look up a Discord user ID from a GitHub username.
+ * Returns null if not found.
+ */
+def lookupDiscordId(String githubUser) {
+    if (!githubUser) return null
+    return discordUsers()[githubUser]
+}
+
 /**
  * Send a simple Discord notification (for in-progress updates)
+ * Optional: pass githubUser to @ mention them.
  */
-def simple(String message, String color) {
-    def payload = """{"embeds":[{"description":"${message}","color":${color}}]}"""
+def simple(String message, String color, String githubUser = null) {
+    def discordId = lookupDiscordId(githubUser)
+    def contentField = ''
+    def mentionsField = ''
+    if (discordId) {
+        contentField = """"content":"<@${discordId}>","""
+        mentionsField = ""","allowed_mentions":{"users":["${discordId}"]}"""
+    }
+    def payload = """{${contentField}"embeds":[{"description":"${message}","color":${color}}]${mentionsField}}"""
     sh "curl -s -X POST -H 'Content-Type: application/json' -d '${payload}' \$DISCORD_WEBHOOK || true"
 }
 
@@ -83,7 +112,17 @@ def failure(Map config) {
     def buildUrl = "${config.jenkinsUrl}/job/${config.jobName}/${BUILD_NUMBER}/"
     def consoleUrl = "${buildUrl}console"
 
+    def githubUser = env.BUILD_GITHUB_USER
+    def discordId = lookupDiscordId(githubUser)
+    def contentField = ''
+    def mentionsField = ''
+    if (discordId) {
+        contentField = """"content": "<@${discordId}>","""
+        mentionsField = ""","allowed_mentions": {"users": ["${discordId}"]}"""
+    }
+
     def payload = """{
+        ${contentField}
         "embeds": [{
             "title": "${config.title} #${BUILD_NUMBER}",
             "description": "${config.message}",
@@ -104,7 +143,7 @@ def failure(Map config) {
             "components": [
                 {"type": 2, "style": 5, "label": "View Console Log", "url": "${consoleUrl}"}
             ]
-        }]
+        }]${mentionsField}
     }"""
     sh "curl -s -X POST -H 'Content-Type: application/json' -d '${payload}' \$DISCORD_WEBHOOK || true"
 }

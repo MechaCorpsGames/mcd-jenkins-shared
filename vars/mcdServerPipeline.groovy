@@ -39,6 +39,7 @@ def call(Map config) {
                     [key: 'commit_sha', value: '$.after'],
                     [key: 'commit_message', value: '$.head_commit.message'],
                     [key: 'commit_author', value: '$.head_commit.author.name'],
+                    [key: 'pusher_name', value: '$.pusher.name'],
                     [key: 'commits_count', value: '$.commits.length()']
                 ],
                 causeString: "Triggered by push to ${config.branch}",
@@ -71,6 +72,15 @@ def call(Map config) {
                             }
                         }
                         env.BUILD_AUTHOR = author
+
+                        // GitHub username for Discord mentions
+                        env.BUILD_GITHUB_USER = env.pusher_name ?: ''
+                        if (!env.BUILD_GITHUB_USER && author != 'Unknown') {
+                            def buildCause2 = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
+                            if (buildCause2 && buildCause2.size() > 0) {
+                                env.BUILD_GITHUB_USER = buildCause2[0].userId ?: ''
+                            }
+                        }
 
                         currentBuild.description = "${commitMsg}\nby ${author} → ${config.environment}"
 

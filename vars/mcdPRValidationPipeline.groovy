@@ -75,6 +75,8 @@ def call(Map config) {
                         echo "Author: ${env.pr_author}"
                         echo "Head SHA: ${env.pr_head_sha}"
 
+                        env.BUILD_GITHUB_USER = env.pr_author
+
                         // Set pending status on GitHub
                         setGitHubStatus('pending', 'Validation started', statusContext)
                     }
@@ -434,7 +436,8 @@ def call(Map config) {
                     def buildUrl = "${env.JENKINS_URL_BASE}/job/${config.jobName}/${BUILD_NUMBER}/console"
                     discordNotify.simple(
                         "❌ PR #${env.pr_number} ${tier} failed — ${env.pr_head_ref} → ${config.targetBranch} — View: ${buildUrl}",
-                        "15158332"
+                        "15158332",
+                        env.pr_author
                     )
                 }
             }
