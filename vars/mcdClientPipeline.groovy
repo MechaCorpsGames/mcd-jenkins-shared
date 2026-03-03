@@ -44,7 +44,8 @@ def call(Map config) {
                     [key: 'commit_sha', value: '$.after'],
                     [key: 'commit_message', value: '$.head_commit.message'],
                     [key: 'commit_author', value: '$.head_commit.author.name'],
-                    [key: 'pusher_name', value: '$.pusher.name']
+                    [key: 'pusher_name', value: '$.pusher.name'],
+                    [key: 'before_sha', value: '$.before']
                 ],
                 causeString: "Triggered by push to ${config.branch}",
                 token: config.webhookToken,
@@ -111,7 +112,29 @@ def call(Map config) {
                 }
             }
 
+            stage('Detect Changes') {
+                steps {
+                    script {
+                        env.BUILD_PHASE = 'Detect Changes'
+                        def baseRef = env.before_sha
+                        if (!baseRef || baseRef.startsWith('0000000')) {
+                            echo "No valid before SHA — building everything"
+                            env.CLIENT_CHANGED = 'true'
+                        } else {
+                            sh "git fetch origin ${baseRef} 2>/dev/null || true"
+                            def changes = mcdChangeDetection.detect(baseRef)
+                            env.CLIENT_CHANGED = changes.clientChanged.toString()
+                        }
+
+                        if (env.CLIENT_CHANGED != 'true') {
+                            currentBuild.description += "\n⏭️ No client changes — skipped"
+                        }
+                    }
+                }
+            }
+
             stage('Setup Dependencies') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
                     script { env.BUILD_PHASE = 'Setup Dependencies' }
                     sh 'chmod +x scripts/setup-deps.sh && ./scripts/setup-deps.sh'
@@ -119,6 +142,7 @@ def call(Map config) {
             }
 
             stage('Build Linux') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 stages {
                     stage('MCDCoreExt Linux Debug') {
                         steps {
@@ -146,6 +170,7 @@ def call(Map config) {
             // Tests run after Linux build because they depend on MCDCoreExt
             // GDExtension classes (e.g. CreateCardIdTestHook, CardId).
             stage('GDScript Tests') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
                     script { env.BUILD_PHASE = 'GDScript Tests' }
                     sh """
@@ -164,6 +189,7 @@ def call(Map config) {
             }
 
             stage('Build Windows (Cross-compile)') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 stages {
                     stage('Setup MinGW OpenSSL') {
                         steps {
@@ -219,6 +245,7 @@ def call(Map config) {
             }
 
             stage('Build Android (Cross-compile)') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 stages {
                     stage('MCDCoreExt Android arm64-v8a Debug') {
                         steps {
@@ -243,6 +270,7 @@ def call(Map config) {
             }
 
             stage('Verify Builds') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
                     script {
                         env.BUILD_PHASE = 'Verify Builds'
@@ -289,6 +317,7 @@ def call(Map config) {
             }
 
             stage('Export Game Executables') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
                     script { env.BUILD_PHASE = 'Export Game Executables' }
                     sh """
@@ -330,6 +359,7 @@ def call(Map config) {
             }
 
             stage('Stage Artifacts') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
                     script { env.BUILD_PHASE = 'Stage Artifacts' }
                     retry(2) {
@@ -415,6 +445,7 @@ EOF
             }
 
             stage('Generate Compatibility Manifest') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
                     script {
                         env.BUILD_PHASE = 'Generate Compatibility Manifest'
@@ -461,6 +492,7 @@ EOF
             }
 
             stage('Archive Artifacts') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
                     script { env.BUILD_PHASE = 'Archive Artifacts' }
                     archiveArtifacts artifacts: 'artifacts/**/*', fingerprint: true
@@ -468,6 +500,7 @@ EOF
             }
 
             stage('Upload Debug Symbols') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
                     script {
                         env.BUILD_PHASE = 'Upload Debug Symbols'
@@ -494,6 +527,10 @@ EOF
         post {
             success {
                 script {
+                    if (env.CLIENT_CHANGED != 'true') {
+                        echo "No client changes detected — skipped build"
+                        return
+                    }
                     def linuxSize = sh(script: "du -h bin/lib/Linux-x86_64/libMCDCoreExt.so 2>/dev/null | cut -f1 || echo 'N/A'", returnStdout: true).trim()
                     discordNotify.success(
                         title: "MechaCorps Client Build",

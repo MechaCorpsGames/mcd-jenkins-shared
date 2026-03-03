@@ -129,8 +129,31 @@ def call(Map config) {
                 }
             }
 
-            stage('Setup Dependencies') {
+            stage('Detect Changes') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                steps {
+                    script {
+                        def changes = mcdChangeDetection.detect("refs/remotes/origin/${config.targetBranch}")
+                        env.SERVER_CHANGED = changes.serverChanged.toString()
+                        env.CLIENT_CHANGED = changes.clientChanged.toString()
+
+                        def scope = ''
+                        if (changes.serverChanged && changes.clientChanged) {
+                            scope = 'server + client'
+                        } else if (changes.serverChanged) {
+                            scope = 'server only'
+                        } else if (changes.clientChanged) {
+                            scope = 'client only'
+                        } else {
+                            scope = 'no builds needed'
+                        }
+                        currentBuild.description += "\nBuilds: ${scope}"
+                    }
+                }
+            }
+
+            stage('Setup Dependencies') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
                 steps {
                     sh 'chmod +x scripts/setup-deps.sh && ./scripts/setup-deps.sh'
                 }
@@ -139,7 +162,7 @@ def call(Map config) {
             // MCDCoreExt Linux debug must be built before GDScript tests
             // because tests depend on GDExtension types (CardId, etc.)
             stage('Build MCDCoreExt Linux (for tests)') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh """
                         cd Src/MCDCoreExt
@@ -150,7 +173,7 @@ def call(Map config) {
             }
 
             stage('GDScript Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh """
                         rm -rf reports/
@@ -168,7 +191,7 @@ def call(Map config) {
             }
 
             stage('Build GameServer, TestClient & Proxy') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
                         rm -rf bin/versions/v* bin/testclient-versions/v*
@@ -180,7 +203,7 @@ def call(Map config) {
             }
 
             stage('Verify Server Build') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
                         env.SERVER_VERSION_PATH = readFile('bin/versions/latest.txt').trim()
@@ -194,7 +217,7 @@ def call(Map config) {
             }
 
             stage('Unit Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
                         cd Src/GameServer
@@ -204,7 +227,7 @@ def call(Map config) {
             }
 
             stage('Integration Test') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
                         def testResult = sh(script: '''
@@ -284,7 +307,7 @@ def call(Map config) {
 
             // Release PRs: full multi-platform MCDCoreExt build
             stage('Build MCDCoreExt (Linux)') {
-                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
                 stages {
                     stage('MCDCoreExt Linux Debug') {
                         steps {
@@ -307,7 +330,7 @@ def call(Map config) {
             }
 
             stage('Build MCDCoreExt (Windows Cross-compile)') {
-                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
                 stages {
                     stage('Setup MinGW OpenSSL') {
                         steps {
@@ -358,7 +381,7 @@ def call(Map config) {
             }
 
             stage('Build MCDCoreExt (Android Cross-compile)') {
-                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
                 stages {
                     stage('MCDCoreExt Android arm64-v8a Debug') {
                         steps {
@@ -380,7 +403,7 @@ def call(Map config) {
             }
 
             stage('Verify All Platform Builds') {
-                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh """
                         echo "=== Linux Builds ==="
@@ -419,10 +442,20 @@ def call(Map config) {
                     }
                     def duration = currentBuild.durationString.replace(' and counting', '')
                     def tier = (config.targetBranch == 'release') ? 'Full validation' : 'Validation'
-                    setGitHubStatus('success', "${tier} passed (${duration})", statusContext)
+                    def scope = ''
+                    if (env.SERVER_CHANGED == 'true' && env.CLIENT_CHANGED == 'true') {
+                        scope = ''
+                    } else if (env.SERVER_CHANGED == 'true') {
+                        scope = ' (server only)'
+                    } else if (env.CLIENT_CHANGED == 'true') {
+                        scope = ' (client only)'
+                    } else {
+                        scope = ' (no builds needed)'
+                    }
+                    setGitHubStatus('success', "${tier} passed${scope} (${duration})", statusContext)
 
                     discordNotify.simple(
-                        "✅ PR #${env.pr_number} ${tier} passed (${duration}) — ${env.pr_head_ref} → ${config.targetBranch}",
+                        "✅ PR #${env.pr_number} ${tier} passed${scope} (${duration}) — ${env.pr_head_ref} → ${config.targetBranch}",
                         "3066993"
                     )
                 }

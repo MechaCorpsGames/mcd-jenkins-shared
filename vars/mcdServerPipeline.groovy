@@ -40,7 +40,8 @@ def call(Map config) {
                     [key: 'commit_message', value: '$.head_commit.message'],
                     [key: 'commit_author', value: '$.head_commit.author.name'],
                     [key: 'pusher_name', value: '$.pusher.name'],
-                    [key: 'commits_count', value: '$.commits.length()']
+                    [key: 'commits_count', value: '$.commits.length()'],
+                    [key: 'before_sha', value: '$.before']
                 ],
                 causeString: "Triggered by push to ${config.branch}",
                 token: config.webhookToken,
@@ -103,7 +104,29 @@ def call(Map config) {
                 }
             }
 
+            stage('Detect Changes') {
+                steps {
+                    script {
+                        def baseRef = env.before_sha
+                        if (!baseRef || baseRef.startsWith('0000000')) {
+                            echo "No valid before SHA — building everything"
+                            env.SERVER_CHANGED = 'true'
+                        } else {
+                            // Ensure the before SHA is available locally
+                            sh "git fetch origin ${baseRef} 2>/dev/null || true"
+                            def changes = mcdChangeDetection.detect(baseRef)
+                            env.SERVER_CHANGED = changes.serverChanged.toString()
+                        }
+
+                        if (env.SERVER_CHANGED != 'true') {
+                            currentBuild.description += "\n⏭️ No server changes — skipped"
+                        }
+                    }
+                }
+            }
+
             stage('Build GameServer, TestClient & Proxy') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
                         rm -rf bin/versions/v* bin/testclient-versions/v*
@@ -115,6 +138,7 @@ def call(Map config) {
             }
 
             stage('Verify Build') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
                         env.SERVER_VERSION_PATH = readFile('bin/versions/latest.txt').trim()
@@ -133,6 +157,7 @@ def call(Map config) {
             }
 
             stage('Unit Tests') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
                         cd Src/GameServer
@@ -142,6 +167,7 @@ def call(Map config) {
             }
 
             stage('Integration Test') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
                         def testResult = sh(script: '''
@@ -221,6 +247,7 @@ def call(Map config) {
             }
 
             stage('Stage Artifacts') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
                         mkdir -p artifacts/server
@@ -257,7 +284,7 @@ EOF
 
             stage('Upload Debug Symbols') {
                 when {
-                    expression { return fileExists('bin/versions') }
+                    expression { env.SERVER_CHANGED == 'true' && fileExists('bin/versions') }
                 }
                 steps {
                     script {
@@ -278,6 +305,7 @@ EOF
             }
 
             stage('Generate Server Manifest') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
                         def protocolVersion = sh(
@@ -312,12 +340,14 @@ EOF
             }
 
             stage('Archive Artifacts') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     archiveArtifacts artifacts: 'artifacts/**/*', fingerprint: true
                 }
             }
 
             stage('Deploy GameServer & TestClient') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
                         mkdir -p ${config.deployPath}/versions ${config.deployPath}/testclient-versions
@@ -330,6 +360,7 @@ EOF
             }
 
             stage('Deploy Proxy (if changed)') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
                         def envFile = config.proxyEnvFile ?: '.env.proxy'
@@ -389,6 +420,7 @@ EOF
             }
 
             stage('Cleanup Old Versions') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
                         cd ${config.deployPath}/versions
@@ -404,6 +436,10 @@ EOF
         post {
             success {
                 script {
+                    if (env.SERVER_CHANGED != 'true') {
+                        echo "No server changes detected — skipped build/deploy"
+                        return
+                    }
                     def proxyNote = (env.PROXY_DEPLOYED == "true") ? " + Proxy hot-swapped" : ""
                     discordNotify.success(
                         title: "MechaCorps Server Build",
