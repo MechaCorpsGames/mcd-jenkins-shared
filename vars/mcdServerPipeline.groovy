@@ -378,7 +378,18 @@ EOF
                                 # Stop systemd proxy service and legacy containers holding our ports
                                 sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
                                 sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
-                                docker rm -f src_proxy_1 2>/dev/null || true
+
+                                # Kill any Docker container holding our target TCP or WS port (host networking)
+                                for cid in \$(docker ps -q --filter 'network=host'); do
+                                    cname=\$(docker inspect --format '{{.Name}}' "\$cid" | sed 's|^/||')
+                                    if [ "\$cname" = "${containerName}" ]; then continue; fi
+                                    cmd=\$(docker inspect --format '{{join .Config.Cmd " "}}' "\$cid" 2>/dev/null || true)
+                                    if echo "\$cmd" | grep -qE '(^|\\s)${config.tcpPort}(\\s|\$)'; then
+                                        echo "Removing container \$cname holding port ${config.tcpPort}"
+                                        docker rm -f "\$cid" 2>/dev/null || true
+                                    fi
+                                done
+                                docker rm -f ${containerName} 2>/dev/null || true
 
                                 rm -f ${config.deployPath}/MCDProxy
                                 cp bin/MCDProxy ${config.deployPath}/MCDProxy
@@ -405,7 +416,18 @@ EOF
                                     # Stop systemd proxy service and legacy containers holding our ports
                                     sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
                                     sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
-                                    docker rm -f src_proxy_1 2>/dev/null || true
+
+                                    # Kill any Docker container holding our target TCP or WS port (host networking)
+                                    for cid in \$(docker ps -q --filter 'network=host'); do
+                                        cname=\$(docker inspect --format '{{.Name}}' "\$cid" | sed 's|^/||')
+                                        if [ "\$cname" = "${containerName}" ]; then continue; fi
+                                        cmd=\$(docker inspect --format '{{join .Config.Cmd " "}}' "\$cid" 2>/dev/null || true)
+                                        if echo "\$cmd" | grep -qE '(^|\\s)${config.tcpPort}(\\s|\$)'; then
+                                            echo "Removing container \$cname holding port ${config.tcpPort}"
+                                            docker rm -f "\$cid" 2>/dev/null || true
+                                        fi
+                                    done
+                                    docker rm -f ${containerName} 2>/dev/null || true
 
                                     cd /var/opt/mechacorpsgames/Src
                                     docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d proxy
