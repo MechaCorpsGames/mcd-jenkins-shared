@@ -237,6 +237,7 @@ def call(Map config) {
 
                             TEST_TCP_PORT=$((30000 + (BUILD_NUMBER % 10000)))
                             TEST_WS_PORT=$((40000 + (BUILD_NUMBER % 10000)))
+                            TEST_BASE_PORT=$((50000 + (BUILD_NUMBER % 10000)))
 
                             TESTCLIENT_PATH="bin/testclient-versions/$(cat bin/testclient-versions/latest.txt)"
 
@@ -256,9 +257,9 @@ def call(Map config) {
                             }
                             trap cleanup EXIT
 
-                            ./bin/MCDProxy -port $TEST_TCP_PORT -wsport $TEST_WS_PORT > /tmp/test_proxy_${BUILD_NUMBER}.log 2>&1 &
+                            ./bin/MCDProxy -port $TEST_TCP_PORT -wsport $TEST_WS_PORT -baseport $TEST_BASE_PORT > /tmp/test_proxy_${BUILD_NUMBER}.log 2>&1 &
                             PROXY_PID=$!
-                            echo "Test proxy started on TCP:$TEST_TCP_PORT, WS:$TEST_WS_PORT (PID: $PROXY_PID)"
+                            echo "Test proxy started on TCP:$TEST_TCP_PORT, WS:$TEST_WS_PORT, BasePort:$TEST_BASE_PORT (PID: $PROXY_PID)"
                             sleep 3
 
                             if ! kill -0 $PROXY_PID 2>/dev/null; then
