@@ -306,19 +306,12 @@ def call(Map config) {
                 }
             }
 
-            // Release PRs: full multi-platform MCDCoreExt build
-            stage('Build MCDCoreExt (Linux)') {
+            // Release PRs: full multi-platform MCDCoreExt build.
+            // Linux Debug was already built above (for tests), so we only need
+            // Linux Release + Windows + Android — all run in parallel.
+            stage('Cross-platform Builds (Release PR)') {
                 when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
-                stages {
-                    stage('MCDCoreExt Linux Debug') {
-                        steps {
-                            sh """
-                                cd Src/MCDCoreExt
-                                chmod +x build.sh
-                                ./build.sh --clean --configure --build --install --debug
-                            """
-                        }
-                    }
+                parallel {
                     stage('MCDCoreExt Linux Release') {
                         steps {
                             sh """
@@ -327,77 +320,75 @@ def call(Map config) {
                             """
                         }
                     }
-                }
-            }
 
-            stage('Build MCDCoreExt (Windows Cross-compile)') {
-                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
-                stages {
-                    stage('Setup MinGW OpenSSL') {
-                        steps {
-                            sh """
-                                OPENSSL_DIR=Src/External/mingw-openssl
-                                if [ ! -d "\${OPENSSL_DIR}/mingw64/include/openssl" ]; then
-                                    echo "Downloading MinGW OpenSSL..."
-                                    mkdir -p \${OPENSSL_DIR}
-                                    cd \${OPENSSL_DIR}
+                    stage('Build MCDCoreExt (Windows Cross-compile)') {
+                        stages {
+                            stage('Setup MinGW OpenSSL') {
+                                steps {
+                                    sh """
+                                        OPENSSL_DIR=Src/External/mingw-openssl
+                                        if [ ! -d "\${OPENSSL_DIR}/mingw64/include/openssl" ]; then
+                                            echo "Downloading MinGW OpenSSL..."
+                                            mkdir -p \${OPENSSL_DIR}
+                                            cd \${OPENSSL_DIR}
 
-                                    curl -L -o openssl.tar.zst "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-openssl-3.4.1-1-any.pkg.tar.zst"
+                                            curl -L -o openssl.tar.zst "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-openssl-3.4.1-1-any.pkg.tar.zst"
 
-                                    zstd -d openssl.tar.zst
-                                    tar xf openssl.tar
-                                    rm -f openssl.tar openssl.tar.zst
+                                            zstd -d openssl.tar.zst
+                                            tar xf openssl.tar
+                                            rm -f openssl.tar openssl.tar.zst
 
-                                    echo "MinGW OpenSSL downloaded and extracted"
-                                    ls -la mingw64/lib/*.a | head -5
-                                else
-                                    echo "MinGW OpenSSL already present"
-                                fi
+                                            echo "MinGW OpenSSL downloaded and extracted"
+                                            ls -la mingw64/lib/*.a | head -5
+                                        else
+                                            echo "MinGW OpenSSL already present"
+                                        fi
 
-                                MINGW_LIB=/usr/x86_64-w64-mingw32/lib
-                                if [ -f "\${MINGW_LIB}/libcrypt32.a" ] && [ ! -f "\${MINGW_LIB}/libCrypt32.a" ]; then
-                                    echo "Creating Crypt32 symlink workaround..."
-                                    sudo ln -sf libcrypt32.a \${MINGW_LIB}/libCrypt32.a || true
-                                fi
-                            """
+                                        MINGW_LIB=/usr/x86_64-w64-mingw32/lib
+                                        if [ -f "\${MINGW_LIB}/libcrypt32.a" ] && [ ! -f "\${MINGW_LIB}/libCrypt32.a" ]; then
+                                            echo "Creating Crypt32 symlink workaround..."
+                                            sudo ln -sf libcrypt32.a \${MINGW_LIB}/libCrypt32.a || true
+                                        fi
+                                    """
+                                }
+                            }
+                            stage('MCDCoreExt Windows Debug') {
+                                steps {
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --debug --windows
+                                    """
+                                }
+                            }
+                            stage('MCDCoreExt Windows Release') {
+                                steps {
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --release --windows
+                                    """
+                                }
+                            }
                         }
                     }
-                    stage('MCDCoreExt Windows Debug') {
-                        steps {
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --debug --windows
-                            """
-                        }
-                    }
-                    stage('MCDCoreExt Windows Release') {
-                        steps {
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --release --windows
-                            """
-                        }
-                    }
-                }
-            }
 
-            stage('Build MCDCoreExt (Android Cross-compile)') {
-                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
-                stages {
-                    stage('MCDCoreExt Android arm64-v8a Debug') {
-                        steps {
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --debug --android arm64-v8a
-                            """
-                        }
-                    }
-                    stage('MCDCoreExt Android arm64-v8a Release') {
-                        steps {
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --release --android arm64-v8a
-                            """
+                    stage('Build MCDCoreExt (Android Cross-compile)') {
+                        stages {
+                            stage('MCDCoreExt Android arm64-v8a Debug') {
+                                steps {
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --debug --android arm64-v8a
+                                    """
+                                }
+                            }
+                            stage('MCDCoreExt Android arm64-v8a Release') {
+                                steps {
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --release --android arm64-v8a
+                                    """
+                                }
+                            }
                         }
                     }
                 }

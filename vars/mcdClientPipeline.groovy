@@ -141,17 +141,40 @@ def call(Map config) {
                 }
             }
 
-            stage('Build Linux') {
+            // Linux Debug must be built first — GDScript tests depend on
+            // GDExtension types (e.g. CreateCardIdTestHook, CardId).
+            stage('MCDCoreExt Linux Debug') {
                 when { expression { env.CLIENT_CHANGED == 'true' } }
-                stages {
-                    stage('MCDCoreExt Linux Debug') {
+                steps {
+                    script { env.BUILD_PHASE = 'MCDCoreExt Linux Debug' }
+                    sh """
+                        cd Src/MCDCoreExt
+                        chmod +x build.sh
+                        ./build.sh --clean --configure --build --install --debug --server-url ${SERVER_URL}
+                    """
+                }
+            }
+
+            // After Linux Debug, run tests + remaining builds in parallel.
+            // Each platform uses a separate build directory so there are no conflicts.
+            stage('Cross-platform Builds & Tests') {
+                when { expression { env.CLIENT_CHANGED == 'true' } }
+                parallel {
+                    stage('GDScript Tests') {
                         steps {
-                            script { env.BUILD_PHASE = 'MCDCoreExt Linux Debug' }
+                            script { env.BUILD_PHASE = 'GDScript Tests' }
                             sh """
-                                cd Src/MCDCoreExt
-                                chmod +x build.sh
-                                ./build.sh --clean --configure --build --install --debug --server-url ${SERVER_URL}
+                                rm -rf reports/
+                                echo "Importing Godot project resources..."
+                                godot --headless --import 2>/dev/null || true
+                                echo "Running GdUnit4 GDScript tests..."
+                                godot --headless -s addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests -c --ignoreHeadlessMode
                             """
+                        }
+                        post {
+                            always {
+                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'reports/**/results.xml'
+                            }
                         }
                     }
 
@@ -164,106 +187,83 @@ def call(Map config) {
                             """
                         }
                     }
-                }
-            }
 
-            // Tests run after Linux build because they depend on MCDCoreExt
-            // GDExtension classes (e.g. CreateCardIdTestHook, CardId).
-            stage('GDScript Tests') {
-                when { expression { env.CLIENT_CHANGED == 'true' } }
-                steps {
-                    script { env.BUILD_PHASE = 'GDScript Tests' }
-                    sh """
-                        rm -rf reports/
-                        echo "Importing Godot project resources..."
-                        godot --headless --import 2>/dev/null || true
-                        echo "Running GdUnit4 GDScript tests..."
-                        godot --headless -s addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests -c --ignoreHeadlessMode
-                    """
-                }
-                post {
-                    always {
-                        junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'reports/**/results.xml'
-                    }
-                }
-            }
+                    stage('Build Windows (Cross-compile)') {
+                        stages {
+                            stage('Setup MinGW OpenSSL') {
+                                steps {
+                                    script { env.BUILD_PHASE = 'Setup MinGW OpenSSL' }
+                                    sh """
+                                        OPENSSL_DIR=Src/External/mingw-openssl
+                                        if [ ! -d "\${OPENSSL_DIR}/mingw64/include/openssl" ]; then
+                                            echo "Downloading MinGW OpenSSL..."
+                                            mkdir -p \${OPENSSL_DIR}
+                                            cd \${OPENSSL_DIR}
 
-            stage('Build Windows (Cross-compile)') {
-                when { expression { env.CLIENT_CHANGED == 'true' } }
-                stages {
-                    stage('Setup MinGW OpenSSL') {
-                        steps {
-                            script { env.BUILD_PHASE = 'Setup MinGW OpenSSL' }
-                            sh """
-                                OPENSSL_DIR=Src/External/mingw-openssl
-                                if [ ! -d "\${OPENSSL_DIR}/mingw64/include/openssl" ]; then
-                                    echo "Downloading MinGW OpenSSL..."
-                                    mkdir -p \${OPENSSL_DIR}
-                                    cd \${OPENSSL_DIR}
+                                            curl -L -o openssl.tar.zst "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-openssl-3.4.1-1-any.pkg.tar.zst"
 
-                                    curl -L -o openssl.tar.zst "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-openssl-3.4.1-1-any.pkg.tar.zst"
+                                            zstd -d openssl.tar.zst
+                                            tar xf openssl.tar
+                                            rm -f openssl.tar openssl.tar.zst
 
-                                    zstd -d openssl.tar.zst
-                                    tar xf openssl.tar
-                                    rm -f openssl.tar openssl.tar.zst
+                                            echo "MinGW OpenSSL downloaded and extracted"
+                                            ls -la mingw64/lib/*.a | head -5
+                                        else
+                                            echo "MinGW OpenSSL already present"
+                                        fi
 
-                                    echo "MinGW OpenSSL downloaded and extracted"
-                                    ls -la mingw64/lib/*.a | head -5
-                                else
-                                    echo "MinGW OpenSSL already present"
-                                fi
+                                        MINGW_LIB=/usr/x86_64-w64-mingw32/lib
+                                        if [ -f "\${MINGW_LIB}/libcrypt32.a" ] && [ ! -f "\${MINGW_LIB}/libCrypt32.a" ]; then
+                                            echo "Creating Crypt32 symlink workaround..."
+                                            sudo ln -sf libcrypt32.a \${MINGW_LIB}/libCrypt32.a || true
+                                        fi
+                                    """
+                                }
+                            }
 
-                                MINGW_LIB=/usr/x86_64-w64-mingw32/lib
-                                if [ -f "\${MINGW_LIB}/libcrypt32.a" ] && [ ! -f "\${MINGW_LIB}/libCrypt32.a" ]; then
-                                    echo "Creating Crypt32 symlink workaround..."
-                                    sudo ln -sf libcrypt32.a \${MINGW_LIB}/libCrypt32.a || true
-                                fi
-                            """
+                            stage('MCDCoreExt Windows Debug') {
+                                steps {
+                                    script { env.BUILD_PHASE = 'MCDCoreExt Windows Debug' }
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --debug --windows --server-url ${SERVER_URL}
+                                    """
+                                }
+                            }
+
+                            stage('MCDCoreExt Windows Release') {
+                                steps {
+                                    script { env.BUILD_PHASE = 'MCDCoreExt Windows Release' }
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --release --windows --server-url ${SERVER_URL}
+                                    """
+                                }
+                            }
                         }
                     }
 
-                    stage('MCDCoreExt Windows Debug') {
-                        steps {
-                            script { env.BUILD_PHASE = 'MCDCoreExt Windows Debug' }
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --debug --windows --server-url ${SERVER_URL}
-                            """
-                        }
-                    }
+                    stage('Build Android (Cross-compile)') {
+                        stages {
+                            stage('MCDCoreExt Android arm64-v8a Debug') {
+                                steps {
+                                    script { env.BUILD_PHASE = 'MCDCoreExt Android arm64-v8a Debug' }
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --debug --android arm64-v8a --server-url ${SERVER_URL}
+                                    """
+                                }
+                            }
 
-                    stage('MCDCoreExt Windows Release') {
-                        steps {
-                            script { env.BUILD_PHASE = 'MCDCoreExt Windows Release' }
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --release --windows --server-url ${SERVER_URL}
-                            """
-                        }
-                    }
-                }
-            }
-
-            stage('Build Android (Cross-compile)') {
-                when { expression { env.CLIENT_CHANGED == 'true' } }
-                stages {
-                    stage('MCDCoreExt Android arm64-v8a Debug') {
-                        steps {
-                            script { env.BUILD_PHASE = 'MCDCoreExt Android arm64-v8a Debug' }
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --debug --android arm64-v8a --server-url ${SERVER_URL}
-                            """
-                        }
-                    }
-
-                    stage('MCDCoreExt Android arm64-v8a Release') {
-                        steps {
-                            script { env.BUILD_PHASE = 'MCDCoreExt Android arm64-v8a Release' }
-                            sh """
-                                cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --release --android arm64-v8a --server-url ${SERVER_URL}
-                            """
+                            stage('MCDCoreExt Android arm64-v8a Release') {
+                                steps {
+                                    script { env.BUILD_PHASE = 'MCDCoreExt Android arm64-v8a Release' }
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --release --android arm64-v8a --server-url ${SERVER_URL}
+                                    """
+                                }
+                            }
                         }
                     }
                 }
