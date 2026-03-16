@@ -74,6 +74,7 @@ RUN curl -fsSL https://sentry.io/get-cli/ | bash || true
 # ── Layer 6: Jenkins user (UID/GID matching host) ─────────────────────────────
 RUN groupadd -g 112 jenkins && \
     useradd -u 103 -g 112 -m -d /home/jenkins -s /bin/bash jenkins && \
+    echo 'jenkins ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/jenkins && \
     chown -R jenkins:jenkins /home/jenkins
 
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
