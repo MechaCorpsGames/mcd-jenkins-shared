@@ -369,9 +369,19 @@ EOF
 
                         def newHash = sh(script: "sha256sum bin/MCDProxy | cut -d' ' -f1", returnStdout: true).trim()
                         def oldHash = sh(script: "sha256sum ${config.deployPath}/MCDProxy 2>/dev/null | cut -d' ' -f1 || echo 'none'", returnStdout: true).trim()
+                        def binaryChanged = (newHash != oldHash)
 
-                        if (newHash != oldHash) {
-                            echo "⚠️ Proxy binary changed - rebuilding Docker container for ${config.environment}"
+                        // Also check if proxy Docker config changed (compose file, env file)
+                        def configHash = sh(script: "cat Src/docker-compose.proxy.yml Src/${envFile} 2>/dev/null | sha256sum | cut -d' ' -f1", returnStdout: true).trim()
+                        def oldConfigHash = sh(script: "cat /tmp/.mcd-proxy-config-hash-${composeProject} 2>/dev/null || echo 'none'", returnStdout: true).trim()
+                        def configChanged = (configHash != oldConfigHash)
+
+                        if (binaryChanged || configChanged) {
+                            if (binaryChanged) {
+                                echo "⚠️ Proxy binary changed - rebuilding Docker container for ${config.environment}"
+                            } else {
+                                echo "⚠️ Proxy config changed - recreating Docker container for ${config.environment}"
+                            }
                             discordNotify.simple("🔄 ${config.environment.capitalize()} proxy container rebuild in progress", "16776960")
 
                             sh """
@@ -391,9 +401,11 @@ EOF
                                 done
                                 docker rm -f ${containerName} 2>/dev/null || true
 
-                                rm -f ${config.deployPath}/MCDProxy
-                                cp bin/MCDProxy ${config.deployPath}/MCDProxy
-                                chmod +x ${config.deployPath}/MCDProxy
+                                if [ "${binaryChanged}" = "true" ]; then
+                                    rm -f ${config.deployPath}/MCDProxy
+                                    cp bin/MCDProxy ${config.deployPath}/MCDProxy
+                                    chmod +x ${config.deployPath}/MCDProxy
+                                fi
 
                                 cd /var/opt/mechacorpsgames/Src
                                 docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --build --force-recreate proxy
@@ -401,6 +413,7 @@ EOF
                                 sleep 3
                                 if docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
                                     echo "✓ ${config.environment} proxy container restarted successfully"
+                                    echo "${configHash}" > /tmp/.mcd-proxy-config-hash-${composeProject}
                                 else
                                     echo "✗ Failed to start proxy container"
                                     docker logs ${containerName} --tail 20 2>&1 || true
