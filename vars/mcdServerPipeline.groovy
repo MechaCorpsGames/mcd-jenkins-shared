@@ -14,7 +14,12 @@ def call(Map config) {
     //   jobName: 'MCDServer-Main' or 'MCDServer-Release'
 
     pipeline {
-        agent any
+        agent {
+            docker {
+                image 'mcd-build-agent:latest'
+                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111'
+            }
+        }
 
         options {
             buildDiscarder(logRotator(numToKeepStr: '10', artifactDaysToKeepStr: '7', artifactNumToKeepStr: '10'))

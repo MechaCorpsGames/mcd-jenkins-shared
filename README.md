@@ -168,3 +168,32 @@ Each PR validation job should be configured as:
    - **ID**: `github-status-token`
    - **Secret**: A GitHub Personal Access Token with `repo:status` scope
    - **Description**: "GitHub Status API token for PR checks"
+
+## Docker Build Agent
+
+All pipelines run inside a Docker container using the `mcd-build-agent` image. This provides isolated, reproducible builds and allows multiple jobs to run concurrently.
+
+### Prerequisites
+
+1. **Docker Pipeline plugin**: Install via Manage Jenkins → Plugins → Available → search "Docker Pipeline" (`docker-workflow`)
+2. **Executor count**: Set to 4+ via Manage Jenkins → Nodes → Built-In Node → Number of executors
+
+### Building the Image
+
+```bash
+cd docker/build-agent
+./build.sh
+```
+
+This builds and tags `mcd-build-agent:latest` locally. Rebuild when tool versions change (Go, Godot, Android NDK, etc.).
+
+### What's in the Image
+
+Debian Bookworm with: GCC, CMake, Go 1.24, MinGW-w64, OpenJDK 17, Android SDK/NDK 26.1, Godot 4.6 headless, Docker CLI, docker-compose, sentry-cli.
+
+### Verifying the Image
+
+```bash
+docker run --rm mcd-build-agent:latest bash -c \
+  'gcc --version | head -1 && go version && godot --version && java -version 2>&1 | head -1 && echo "OK"'
+```

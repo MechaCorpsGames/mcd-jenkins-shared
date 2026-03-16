@@ -18,7 +18,12 @@ def call(Map config) {
         : 'jenkins/pr-validation'
 
     pipeline {
-        agent any
+        agent {
+            docker {
+                image 'mcd-build-agent:latest'
+                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111'
+            }
+        }
 
         options {
             buildDiscarder(logRotator(numToKeepStr: '20'))
@@ -344,10 +349,11 @@ def call(Map config) {
                                             echo "MinGW OpenSSL already present"
                                         fi
 
+                                        # Crypt32 symlink is pre-created in the Docker build agent image
                                         MINGW_LIB=/usr/x86_64-w64-mingw32/lib
                                         if [ -f "\${MINGW_LIB}/libcrypt32.a" ] && [ ! -f "\${MINGW_LIB}/libCrypt32.a" ]; then
                                             echo "Creating Crypt32 symlink workaround..."
-                                            sudo ln -sf libcrypt32.a \${MINGW_LIB}/libCrypt32.a || true
+                                            ln -sf libcrypt32.a \${MINGW_LIB}/libCrypt32.a || true
                                         fi
                                     """
                                 }

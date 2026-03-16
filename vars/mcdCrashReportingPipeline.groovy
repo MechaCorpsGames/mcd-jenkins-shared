@@ -9,7 +9,12 @@ def call(Map config) {
     //   jobName: 'MCDCrashReporting'
 
     pipeline {
-        agent any
+        agent {
+            docker {
+                image 'mcd-build-agent:latest'
+                args '-v /var/run/docker.sock:/var/run/docker.sock -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111'
+            }
+        }
 
         options {
             buildDiscarder(logRotator(numToKeepStr: '10'))
@@ -21,8 +26,7 @@ def call(Map config) {
             BRANCH_NAME = "${config.branch}"
             COMPOSE_FILE = "Src/docker-compose.crash-reporting.yml"
             COMPOSE_PROJECT = "mcd-crash-reporting"
-            GOROOT = "/home/tim/go-1.24/go"
-            PATH = "/home/tim/go-1.24/go/bin:${env.PATH}"
+            // Go is on PATH inside the Docker build agent image
         }
 
         triggers {
