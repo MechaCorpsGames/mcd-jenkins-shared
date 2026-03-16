@@ -34,7 +34,9 @@ def simple(String message, String color, String githubUser = null) {
         mentionsField = ""","allowed_mentions":{"users":["${discordId}"]}"""
     }
     def payload = """{${contentField}"embeds":[{"description":"${message}","color":${color}}]${mentionsField}}"""
-    sh "curl -s -X POST -H 'Content-Type: application/json' -d '${payload}' \$DISCORD_WEBHOOK || true"
+    writeFile file: '.discord_payload.json', text: payload
+    sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
+    sh 'rm -f .discord_payload.json'
 }
 
 /**
@@ -42,8 +44,8 @@ def simple(String message, String color, String githubUser = null) {
  */
 def success(Map config) {
     def shortSha = env.commit_sha ? env.commit_sha.take(7) : 'manual'
-    def commitMsg = env.commit_message ? env.commit_message.split('\n')[0].take(50) : 'Manual trigger'
-    def author = env.BUILD_AUTHOR ?: 'Unknown'
+    def commitMsg = env.commit_message ? env.commit_message.split('\n')[0].take(50).replace('\\', '\\\\').replace('"', '\\"') : 'Manual trigger'
+    def author = (env.BUILD_AUTHOR ?: 'Unknown').replace('\\', '\\\\').replace('"', '\\"')
     def duration = currentBuild.durationString.replace(' and counting', '')
     def buildUrl = "${config.jenkinsUrl}/job/${config.jobName}/${BUILD_NUMBER}/"
     def artifactUrl = "${buildUrl}artifact/artifacts/"
@@ -98,7 +100,9 @@ def success(Map config) {
             ]
         }]
     }"""
-    sh "curl -s -X POST -H 'Content-Type: application/json' -d '${payload}' \$DISCORD_WEBHOOK || true"
+    writeFile file: '.discord_payload.json', text: payload
+    sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
+    sh 'rm -f .discord_payload.json'
 }
 
 /**
@@ -106,8 +110,8 @@ def success(Map config) {
  */
 def failure(Map config) {
     def shortSha = env.commit_sha ? env.commit_sha.take(7) : 'manual'
-    def commitMsg = env.commit_message ? env.commit_message.split('\n')[0].take(50) : 'Manual trigger'
-    def author = env.BUILD_AUTHOR ?: 'Unknown'
+    def commitMsg = env.commit_message ? env.commit_message.split('\n')[0].take(50).replace('\\', '\\\\').replace('"', '\\"') : 'Manual trigger'
+    def author = (env.BUILD_AUTHOR ?: 'Unknown').replace('\\', '\\\\').replace('"', '\\"')
     def duration = currentBuild.durationString.replace(' and counting', '')
     def buildUrl = "${config.jenkinsUrl}/job/${config.jobName}/${BUILD_NUMBER}/"
     def consoleUrl = "${buildUrl}console"
@@ -145,7 +149,9 @@ def failure(Map config) {
             ]
         }]${mentionsField}
     }"""
-    sh "curl -s -X POST -H 'Content-Type: application/json' -d '${payload}' \$DISCORD_WEBHOOK || true"
+    writeFile file: '.discord_payload.json', text: payload
+    sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
+    sh 'rm -f .discord_payload.json'
 }
 
 return this
