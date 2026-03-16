@@ -112,7 +112,6 @@ def call(Map config) {
             stage('Checkout') {
                 steps {
                     script { env.BUILD_PHASE = 'Checkout' }
-                    cleanWs()
                     checkout scm
                 }
             }
