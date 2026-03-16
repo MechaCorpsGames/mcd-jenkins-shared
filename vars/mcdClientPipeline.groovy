@@ -132,6 +132,7 @@ def call(Map config) {
 
                         if (env.CLIENT_CHANGED != 'true') {
                             currentBuild.description += "\n⏭️ No client changes — skipped"
+                            currentBuild.result = 'NOT_BUILT'
                         }
                     }
                 }
