@@ -94,13 +94,16 @@ def call(Map config) {
                     // Clean untracked files so stale .uid / generated files
                     // from a previous build can't block the PR checkout
                     sh 'git clean -fdx'
-                    sshagent(['github-ssh']) {
                     script {
                         // Local merge: fetch target branch + PR head, then merge locally.
                         // GitHub's refs/pull/NNN/merge can be stale when the webhook fires
                         // before GitHub regenerates the ref (caused build #57 failure).
-                        sh "git fetch origin +refs/heads/${config.targetBranch}:refs/remotes/origin/${config.targetBranch}"
-                        sh "git fetch origin ${env.pr_head_sha}"
+                        // Use GIT_SSH_COMMAND to ensure git uses the mounted deploy key,
+                        // since checkout scm's GIT_SSH wrapper isn't active for manual fetches.
+                        withEnv(['GIT_SSH_COMMAND=ssh -i /var/lib/jenkins/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new']) {
+                            sh "git fetch origin +refs/heads/${config.targetBranch}:refs/remotes/origin/${config.targetBranch}"
+                            sh "git fetch origin ${env.pr_head_sha}"
+                        }
                         sh "git checkout refs/remotes/origin/${config.targetBranch}"
 
                         def mergeResult = sh(
@@ -131,7 +134,6 @@ def call(Map config) {
                             error("PR #${env.pr_number} has merge conflicts with ${config.targetBranch}.")
                         }
                         echo "Checked out PR #${env.pr_number} (${env.pr_head_sha.take(7)}) merged into ${config.targetBranch}"
-                    }
                     }
                 }
             }
