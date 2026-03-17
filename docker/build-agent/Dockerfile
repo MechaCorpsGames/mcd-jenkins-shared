@@ -7,7 +7,7 @@ FROM debian:bookworm
 # ── Layer 1: System packages, JDK 17, MinGW ──────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential gcc g++ cmake make \
-        git curl wget zip unzip zstd ca-certificates gnupg lsb-release \
+        git openssh-client curl wget zip unzip zstd ca-certificates gnupg lsb-release \
         openjdk-17-jdk-headless \
         mingw-w64 \
         python3 rsync sudo \
