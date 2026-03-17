@@ -94,6 +94,7 @@ def call(Map config) {
                     // Clean untracked files so stale .uid / generated files
                     // from a previous build can't block the PR checkout
                     sh 'git clean -fdx'
+                    sshagent(['github-ssh']) {
                     script {
                         // Local merge: fetch target branch + PR head, then merge locally.
                         // GitHub's refs/pull/NNN/merge can be stale when the webhook fires
@@ -130,6 +131,7 @@ def call(Map config) {
                             error("PR #${env.pr_number} has merge conflicts with ${config.targetBranch}.")
                         }
                         echo "Checked out PR #${env.pr_number} (${env.pr_head_sha.take(7)}) merged into ${config.targetBranch}"
+                    }
                     }
                 }
             }
