@@ -105,6 +105,7 @@ def call(Map config) {
                             sh "git fetch origin ${env.pr_head_sha}"
                         }
                         sh "git checkout refs/remotes/origin/${config.targetBranch}"
+                        sh 'git config user.email "jenkins@mechacorpsgames.com" && git config user.name "Jenkins CI"'
 
                         def mergeResult = sh(
                             script: "git merge --no-edit ${env.pr_head_sha}",
