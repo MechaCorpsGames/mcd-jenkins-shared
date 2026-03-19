@@ -378,8 +378,10 @@ def call(Map config) {
                         cp exports/MechaCorpsDraft.exe \${ARTIFACT_BASE}/game/Windows/
                         cp exports/MechaCorpsDraft.x86_64 \${ARTIFACT_BASE}/game/Linux/
 
-                        cp bin/lib/Windows-x86_64/MCDCoreExt.dll \${ARTIFACT_BASE}/game/Windows/ 2>/dev/null || \
-                            cp bin/lib/Windows-x86_64/libMCDCoreExt.dll \${ARTIFACT_BASE}/game/Windows/MCDCoreExt.dll
+                        # CMake PREFIX "" strips the lib prefix for Windows builds.
+                        # Do not fall back to libMCDCoreExt.dll — a stale build with
+                        # the wrong name would produce a broken artifact.
+                        cp bin/lib/Windows-x86_64/MCDCoreExt.dll \${ARTIFACT_BASE}/game/Windows/
                         cp bin/lib/Windows-x86_64/libcrypto-3-x64.dll \${ARTIFACT_BASE}/game/Windows/
                         cp bin/lib/Windows-x86_64/libssl-3-x64.dll \${ARTIFACT_BASE}/game/Windows/
                         cp bin/lib/Windows-x86_64/libwinpthread-1.dll \${ARTIFACT_BASE}/game/Windows/
