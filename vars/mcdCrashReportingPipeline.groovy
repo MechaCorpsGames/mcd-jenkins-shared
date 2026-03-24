@@ -1,6 +1,7 @@
 // MechaCorps Crash Reporting Pipeline - Shared Library
-// Builds and deploys: CrashReporting Go service (Log Bundler)
-// Manages: docker-compose stack (Redis, GlitchTip, CrashReporting)
+// Builds and deploys: CrashReporting (Log Bundler) + MCP Server
+// Crash events are ingested by Sentry cloud; these services handle
+// log collection, GitHub issue creation, and MCP tool access.
 
 def call(Map config) {
     // Required config:
