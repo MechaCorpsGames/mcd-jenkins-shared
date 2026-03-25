@@ -178,7 +178,13 @@ def call(Map config) {
                         }
                         post {
                             always {
-                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'reports/**/results.xml'
+                                script {
+                                    try {
+                                        junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'reports/**/results.xml'
+                                    } catch (NoSuchMethodError e) {
+                                        echo "JUnit plugin not installed — skipping test report publishing"
+                                    }
+                                }
                             }
                         }
                     }
