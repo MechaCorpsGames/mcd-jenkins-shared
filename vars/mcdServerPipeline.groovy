@@ -297,6 +297,7 @@ EOF
                         def sentryCliExists = sh(script: 'which sentry-cli', returnStatus: true) == 0
                         if (sentryCliExists) {
                             sh """
+                                export SENTRY_AUTH_TOKEN=\$(grep SENTRY_TOKEN /var/opt/mechacorpsgames/Src/.env.sentry | cut -d= -f2)
                                 sentry-cli --url \${SENTRY_URL:-https://crashes.mechacorpsgames.com} \
                                     upload-dif --org mechacorps --project mcd-server \
                                     bin/versions/ \
