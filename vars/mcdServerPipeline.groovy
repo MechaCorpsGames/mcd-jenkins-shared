@@ -298,8 +298,8 @@ EOF
                         if (sentryCliExists) {
                             sh """
                                 export SENTRY_AUTH_TOKEN=\$(grep SENTRY_TOKEN /var/opt/mechacorpsgames/Src/.env.sentry | cut -d= -f2)
-                                sentry-cli --url \${SENTRY_URL:-https://crashes.mechacorpsgames.com} \
-                                    upload-dif --org mechacorps --project mcd-server \
+                                sentry-cli --url https://us.sentry.io \
+                                    upload-dif --org mechacorps-llc --project mcd-server \
                                     bin/versions/ \
                                     Src/GameServer/build/ \
                                     || echo "⚠️ Symbol upload failed (non-fatal)"
