@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         openjdk-17-jdk-headless \
         mingw-w64 \
         python3 rsync sudo \
+        zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-create Crypt32 symlink for MinGW OpenSSL builds (avoids sudo at build time)
