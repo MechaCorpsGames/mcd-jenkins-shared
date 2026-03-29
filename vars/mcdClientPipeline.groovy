@@ -419,6 +419,20 @@ GDEXT
 
                         rm -rf \${ARTIFACT_BASE}/game
 
+                        # Stage debug symbols as a separate archive
+                        mkdir -p \${ARTIFACT_BASE}/symbols/Windows-x86_64
+                        mkdir -p \${ARTIFACT_BASE}/symbols/Linux-x86_64
+                        cp bin/lib/Windows-x86_64/MCDCoreExt.dll.sym \${ARTIFACT_BASE}/symbols/Windows-x86_64/ 2>/dev/null || true
+                        cp bin/lib/Windows-x86_64/MCDCoreExt-d.dll.sym \${ARTIFACT_BASE}/symbols/Windows-x86_64/ 2>/dev/null || true
+                        cp bin/lib/Linux-x86_64/libMCDCoreExt-d.so \${ARTIFACT_BASE}/symbols/Linux-x86_64/ 2>/dev/null || true
+                        SYMBOL_COUNT=\$(find \${ARTIFACT_BASE}/symbols -type f | wc -l)
+                        if [ "\$SYMBOL_COUNT" -gt 0 ]; then
+                            cd \${ARTIFACT_BASE}/symbols && zip -r ../MechaCorpsDraft-${BRANCH_NAME}-Symbols-v${CLIENT_VERSION}.zip . && cd -
+                        else
+                            echo "⚠️ No symbol files found to archive"
+                        fi
+                        rm -rf \${ARTIFACT_BASE}/symbols
+
                         echo "${CLIENT_VERSION}" > \${ARTIFACT_BASE}/latest.txt
 
                         COMMIT_SHA_VAL="\${commit_sha:-manual}"
