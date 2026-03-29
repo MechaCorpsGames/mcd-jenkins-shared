@@ -172,6 +172,21 @@ def call(Map config) {
                 }
             }
 
+            stage('Economy Service Tests') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        nix develop . --command bash -c '
+                            dev-pg init && dev-pg start &&
+                            cd Src/Auth && go test ./... &&
+                            cd ../AccountService && go test ./... &&
+                            cd ../AuctionHouse && go test ./... &&
+                            dev-pg down --pg
+                        '
+                    '''
+                }
+            }
+
             stage('Integration Test') {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
