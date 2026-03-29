@@ -156,7 +156,7 @@ def call(Map config) {
                     sh """
                         cd Src/MCDCoreExt
                         chmod +x build.sh
-                        ./build.sh --clean --configure --build --install --debug --server-url ${SERVER_URL}
+                        ./build.sh --clean --configure --build --install --debug --server-url ${SERVER_URL} --build-number ${BUILD_NUMBER} --branch ${BRANCH_NAME}
                     """
                 }
             }
@@ -195,7 +195,7 @@ def call(Map config) {
                             script { env.BUILD_PHASE = 'MCDCoreExt Linux Release' }
                             sh """
                                 cd Src/MCDCoreExt
-                                ./build.sh --clean --configure --build --install --release --server-url ${SERVER_URL}
+                                ./build.sh --clean --configure --build --install --release --server-url ${SERVER_URL} --build-number ${BUILD_NUMBER} --branch ${BRANCH_NAME}
                             """
                         }
                     }
@@ -239,7 +239,7 @@ def call(Map config) {
                                     script { env.BUILD_PHASE = 'MCDCoreExt Windows Debug' }
                                     sh """
                                         cd Src/MCDCoreExt
-                                        ./build.sh --clean --configure --build --install --debug --windows --server-url ${SERVER_URL}
+                                        ./build.sh --clean --configure --build --install --debug --windows --server-url ${SERVER_URL} --build-number ${BUILD_NUMBER} --branch ${BRANCH_NAME}
                                     """
                                 }
                             }
@@ -249,7 +249,7 @@ def call(Map config) {
                                     script { env.BUILD_PHASE = 'MCDCoreExt Windows Release' }
                                     sh """
                                         cd Src/MCDCoreExt
-                                        ./build.sh --clean --configure --build --install --release --windows --server-url ${SERVER_URL}
+                                        ./build.sh --clean --configure --build --install --release --windows --server-url ${SERVER_URL} --build-number ${BUILD_NUMBER} --branch ${BRANCH_NAME}
                                     """
                                 }
                             }
@@ -263,7 +263,7 @@ def call(Map config) {
                                     script { env.BUILD_PHASE = 'MCDCoreExt Android arm64-v8a Debug' }
                                     sh """
                                         cd Src/MCDCoreExt
-                                        ./build.sh --clean --configure --build --install --debug --android arm64-v8a --server-url ${SERVER_URL}
+                                        ./build.sh --clean --configure --build --install --debug --android arm64-v8a --server-url ${SERVER_URL} --build-number ${BUILD_NUMBER} --branch ${BRANCH_NAME}
                                     """
                                 }
                             }
@@ -273,7 +273,7 @@ def call(Map config) {
                                     script { env.BUILD_PHASE = 'MCDCoreExt Android arm64-v8a Release' }
                                     sh """
                                         cd Src/MCDCoreExt
-                                        ./build.sh --clean --configure --build --install --release --android arm64-v8a --server-url ${SERVER_URL}
+                                        ./build.sh --clean --configure --build --install --release --android arm64-v8a --server-url ${SERVER_URL} --build-number ${BUILD_NUMBER} --branch ${BRANCH_NAME}
                                     """
                                 }
                             }
