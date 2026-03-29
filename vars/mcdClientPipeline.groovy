@@ -36,6 +36,7 @@ def call(Map config) {
             GODOT_ANDROID_KEYSTORE_RELEASE_USER = "androiddebugkey"
             GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD = "android"
             BRANCH_NAME = "${config.branch}"
+            BRANCH_SAFE = "${config.branch.replaceAll('/', '-')}"
             DEPLOY_ENV = "${config.environment}"
             SERVER_URL = "${config.serverUrl}"
             BUILD_PHASE = "Initializing"
@@ -376,7 +377,7 @@ def call(Map config) {
                     script { env.BUILD_PHASE = 'Stage Artifacts' }
                     retry(2) {
                     sh """
-                        ARTIFACT_BASE="artifacts/${BRANCH_NAME}/v${CLIENT_VERSION}"
+                        ARTIFACT_BASE="artifacts/${BRANCH_SAFE}/v${CLIENT_VERSION}"
 
                         mkdir -p \${ARTIFACT_BASE}/game/Windows
                         mkdir -p \${ARTIFACT_BASE}/game/Linux
@@ -413,9 +414,9 @@ compatibility_minimum = "4.3"
 linux.release.x86_64 = "lib/Linux-x86_64/libMCDCoreExt.so"
 GDEXT
 
-                        cd \${ARTIFACT_BASE}/game/Windows && zip -r ../../MechaCorpsDraft-${BRANCH_NAME}-Windows-v${CLIENT_VERSION}.zip . && cd -
-                        cd \${ARTIFACT_BASE}/game/Linux && zip -r ../../MechaCorpsDraft-${BRANCH_NAME}-Linux-v${CLIENT_VERSION}.zip . && cd -
-                        cp exports/MechaCorpsDraft.apk \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_NAME}-Android-v${CLIENT_VERSION}.apk
+                        cd \${ARTIFACT_BASE}/game/Windows && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Windows-v${CLIENT_VERSION}.zip . && cd -
+                        cd \${ARTIFACT_BASE}/game/Linux && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Linux-v${CLIENT_VERSION}.zip . && cd -
+                        cp exports/MechaCorpsDraft.apk \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.apk
 
                         rm -rf \${ARTIFACT_BASE}/game
 
@@ -427,7 +428,7 @@ GDEXT
                         cp bin/lib/Linux-x86_64/libMCDCoreExt-d.so \${ARTIFACT_BASE}/symbols/Linux-x86_64/ 2>/dev/null || true
                         SYMBOL_COUNT=\$(find \${ARTIFACT_BASE}/symbols -type f | wc -l)
                         if [ "\$SYMBOL_COUNT" -gt 0 ]; then
-                            cd \${ARTIFACT_BASE}/symbols && zip -r ../MechaCorpsDraft-${BRANCH_NAME}-Symbols-v${CLIENT_VERSION}.zip . && cd -
+                            cd \${ARTIFACT_BASE}/symbols && zip -r ../MechaCorpsDraft-${BRANCH_SAFE}-Symbols-v${CLIENT_VERSION}.zip . && cd -
                         else
                             echo "⚠️ No symbol files found to archive"
                         fi
@@ -485,7 +486,7 @@ EOF
                         env.PROTOCOL_VERSION = protocolVersion
 
                         sh """
-                            ARTIFACT_BASE="artifacts/${BRANCH_NAME}/v${CLIENT_VERSION}"
+                            ARTIFACT_BASE="artifacts/${BRANCH_SAFE}/v${CLIENT_VERSION}"
                             cat > \${ARTIFACT_BASE}/manifest.json << EOF
 {
     "clientVersion": "${CLIENT_VERSION}",
@@ -498,15 +499,15 @@ EOF
     "commit": "\${commit_sha:-manual}",
     "platforms": {
         "windows": {
-            "download": "MechaCorpsDraft-${BRANCH_NAME}-Windows-v${CLIENT_VERSION}.zip",
+            "download": "MechaCorpsDraft-${BRANCH_SAFE}-Windows-v${CLIENT_VERSION}.zip",
             "executable": "MechaCorpsDraft.exe"
         },
         "linux": {
-            "download": "MechaCorpsDraft-${BRANCH_NAME}-Linux-v${CLIENT_VERSION}.zip",
+            "download": "MechaCorpsDraft-${BRANCH_SAFE}-Linux-v${CLIENT_VERSION}.zip",
             "executable": "MechaCorpsDraft.x86_64"
         },
         "android": {
-            "download": "MechaCorpsDraft-${BRANCH_NAME}-Android-v${CLIENT_VERSION}.apk",
+            "download": "MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.apk",
             "package": "com.mechacorpsgames.mechacorpsdraft"
         }
     }
