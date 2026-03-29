@@ -177,11 +177,11 @@ def call(Map config) {
                 steps {
                     sh '''
                         nix develop . --command bash -c '
-                            dev-pg init && dev-pg start &&
+                            dev-pg.sh init && dev-pg.sh start || exit 1
+                            trap "dev-pg.sh stop" EXIT
                             cd Src/Auth && go test ./... &&
                             cd ../AccountService && go test ./... &&
-                            cd ../AuctionHouse && go test ./... &&
-                            dev-pg down --pg
+                            cd ../AuctionHouse && go test ./...
                         '
                     '''
                 }
