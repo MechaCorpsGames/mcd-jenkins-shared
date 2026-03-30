@@ -7,7 +7,8 @@
  *
  * @param baseRef  Git ref to diff against (e.g., 'origin/main', a commit SHA)
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
- *         monitoringChanged, crashReportingChanged, changedFiles (list)
+ *         monitoringChanged, crashReportingChanged,
+ *         accountServiceChanged, auctionHouseChanged, changedFiles (list)
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -19,7 +20,8 @@ def detect(String baseRef) {
         echo "Warning: Change detection failed or no changes found - building everything"
         return [serverChanged: true, clientChanged: true, authChanged: true,
                 wikiChanged: true, monitoringChanged: true,
-                crashReportingChanged: true, changedFiles: []]
+                crashReportingChanged: true, accountServiceChanged: true,
+                auctionHouseChanged: true, changedFiles: []]
     }
 
     def changedFiles = changedFilesRaw.split('\n').collect { it.trim() }.findAll { it }
@@ -32,6 +34,8 @@ def detect(String baseRef) {
     def wikiChanged = false
     def monitoringChanged = false
     def crashReportingChanged = false
+    def accountServiceChanged = false
+    def auctionHouseChanged = false
     def unmatchedFiles = []
 
     for (file in changedFiles) {
@@ -48,16 +52,24 @@ def detect(String baseRef) {
                 clientChanged = true
                 break
             case 'services-shared':
-                // Src/Shared/ affects Proxy (server), Auth, and crash-reporting
+                // Src/Shared/ affects Proxy (server) and all Go services
                 serverChanged = true
                 authChanged = true
                 crashReportingChanged = true
+                accountServiceChanged = true
+                auctionHouseChanged = true
                 break
             case 'crash-reporting':
                 crashReportingChanged = true
                 break
             case 'auth':
                 authChanged = true
+                break
+            case 'account-service':
+                accountServiceChanged = true
+                break
+            case 'auction-house':
+                auctionHouseChanged = true
                 break
             case 'wiki':
                 wikiChanged = true
@@ -80,18 +92,21 @@ def detect(String baseRef) {
         clientChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged} ==="
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
             crashReportingChanged: crashReportingChanged,
+            accountServiceChanged: accountServiceChanged,
+            auctionHouseChanged: auctionHouseChanged,
             changedFiles: changedFiles]
 }
 
 /**
  * Categorize a file path into a component.
  * @return 'server', 'client', 'shared', 'services-shared', 'auth',
- *         'crash-reporting', 'wiki', 'monitoring', 'docs', or 'unknown'
+ *         'account-service', 'auction-house', 'crash-reporting',
+ *         'wiki', 'monitoring', 'docs', or 'unknown'
  */
 def categorize(String filePath) {
     // Shared paths (trigger both server and client builds)
@@ -144,10 +159,17 @@ def categorize(String filePath) {
     if (filePath.startsWith('Src/CrashReporting/') || filePath.startsWith('Src/MCPServer/')) return 'crash-reporting'
     if (filePath.startsWith('Src/docker-compose.crash-reporting')) return 'crash-reporting'
 
+    // AccountService (per-environment app service)
+    if (filePath.startsWith('Src/AccountService/')) return 'account-service'
+    if (filePath.startsWith('Src/docker-compose.account')) return 'account-service'
+
+    // AuctionHouse (per-environment app service)
+    if (filePath.startsWith('Src/AuctionHouse/')) return 'auction-house'
+    if (filePath.startsWith('Src/docker-compose.auction')) return 'auction-house'
+
     // Documentation / tooling paths (no build needed)
     def docPrefixes = [
         'docs/', '.github/', 'reports/',
-        'Src/AccountService/', 'Src/AuctionHouse/',
     ]
     for (prefix in docPrefixes) {
         if (filePath.startsWith(prefix)) return 'docs'

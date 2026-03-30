@@ -1,13 +1,13 @@
-// MechaCorps Services Pipeline - Shared Library (main branch only)
-// Deploys shared infrastructure: CrashReporting+MCP, Wiki sync, Monitoring
+// MechaCorps App Services Pipeline - Shared Library
+// Deploys per-environment services: Auth, AccountService, AuctionHouse
 // Each service is independently catchError-wrapped so one failure
 // marks the build UNSTABLE without blocking other deploys.
 
 def call(Map config) {
     // Required config:
-    //   branch: 'main'
-    //   webhookToken: 'mcd-crash-reporting'
-    //   jobName: 'MCDServices-Main'
+    //   branch: 'main', 'release', 'features/card', etc.
+    //   webhookToken: 'mcdappservices-main'
+    //   jobName: 'MCDAppServices-Main'
 
     pipeline {
         agent {
@@ -45,7 +45,7 @@ def call(Map config) {
                 printPostContent: false,
                 silentResponse: false,
                 regexpFilterText: '$ref $changed_files',
-                regexpFilterExpression: "refs/heads/${config.branch}.*(Src/Shared|Src/CrashReporting|Src/MCPServer|Src/Monitoring|Src/Wiki|docs/wiki|Src/docker-compose\\.(crash-reporting|monitoring)).*"
+                regexpFilterExpression: "refs/heads/${config.branch}.*(Src/Auth|Src/AccountService|Src/AuctionHouse|Src/Shared|Src/docker-compose\\.(auth|account|auction)).*"
             )
         }
 
@@ -92,22 +92,22 @@ def call(Map config) {
                         def baseRef = env.before_sha
                         if (!baseRef || baseRef.startsWith('0000000')) {
                             echo "No valid before SHA — deploying everything"
-                            env.CRASH_REPORTING_CHANGED = 'true'
-                            env.WIKI_CHANGED = 'true'
-                            env.MONITORING_CHANGED = 'true'
+                            env.AUTH_CHANGED = 'true'
+                            env.ACCOUNT_SERVICE_CHANGED = 'true'
+                            env.AUCTION_HOUSE_CHANGED = 'true'
                         } else {
                             sh "git fetch origin ${baseRef} 2>/dev/null || true"
                             def changes = mcdChangeDetection.detect(baseRef)
-                            env.CRASH_REPORTING_CHANGED = changes.crashReportingChanged.toString()
-                            env.WIKI_CHANGED = changes.wikiChanged.toString()
-                            env.MONITORING_CHANGED = changes.monitoringChanged.toString()
+                            env.AUTH_CHANGED = changes.authChanged.toString()
+                            env.ACCOUNT_SERVICE_CHANGED = changes.accountServiceChanged.toString()
+                            env.AUCTION_HOUSE_CHANGED = changes.auctionHouseChanged.toString()
                         }
 
-                        def anyWork = (env.CRASH_REPORTING_CHANGED == 'true' ||
-                                       env.WIKI_CHANGED == 'true' ||
-                                       env.MONITORING_CHANGED == 'true')
+                        def anyWork = (env.AUTH_CHANGED == 'true' ||
+                                       env.ACCOUNT_SERVICE_CHANGED == 'true' ||
+                                       env.AUCTION_HOUSE_CHANGED == 'true')
                         if (!anyWork) {
-                            currentBuild.description += "\n⏭️ No service changes — skipped"
+                            currentBuild.description += "\n⏭️ No app service changes — skipped"
                             currentBuild.result = 'NOT_BUILT'
                         }
                     }
@@ -119,112 +119,106 @@ def call(Map config) {
             // the build UNSTABLE but does NOT block other services.
             // ================================================================
 
-            stage('Deploy CrashReporting + MCP') {
-                when { expression { env.CRASH_REPORTING_CHANGED == 'true' } }
+            stage('Deploy Auth') {
+                when { expression { env.AUTH_CHANGED == 'true' } }
                 steps {
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                         script {
-                            echo "CrashReporting/MCP changed — building and deploying"
+                            echo "Auth service changed — rebuilding Docker container"
 
                             sh """
-                                cd Src/CrashReporting
-                                CGO_ENABLED=0 GOOS=linux GOWORK=off go build -o crash-reporting .
-                                echo "✓ CrashReporting binary built"
-
-                                cd ../MCPServer
-                                CGO_ENABLED=0 GOOS=linux GOWORK=off go build -o mcp-server .
-                                echo "✓ MCPServer binary built"
-
                                 cd /var/opt/mechacorpsgames/Src
-                                docker-compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting up -d --build --force-recreate crash-reporting mcp-server
-                                sleep 5
-
-                                PASS=true
-                                for SVC in "Log Bundler:8090" "MCP Server:8095"; do
-                                    NAME="\${SVC%%:*}"
-                                    PORT="\${SVC##*:}"
-                                    OK=false
-                                    for i in \$(seq 1 10); do
-                                        RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:\$PORT/health)
-                                        if [ "\$RESULT" = "200" ]; then
-                                            echo "✓ \$NAME health check passed"
-                                            OK=true
-                                            break
-                                        fi
-                                        echo "Waiting for \$NAME... (attempt \$i/10)"
-                                        sleep 3
-                                    done
-                                    if [ "\$OK" = "false" ]; then
-                                        echo "✗ \$NAME health check failed"
-                                        PASS=false
-                                    fi
-                                done
-                                if [ "\$PASS" = "false" ]; then
-                                    cd /var/opt/mechacorpsgames/Src
-                                    docker-compose -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting -p src logs --tail=50 crash-reporting mcp-server
-                                    exit 1
-                                fi
-                            """
-                            env.CRASH_REPORTING_DEPLOYED = "true"
-                        }
-                    }
-                }
-            }
-
-            stage('Sync Wiki') {
-                when { expression { env.WIKI_CHANGED == 'true' } }
-                steps {
-                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        script {
-                            echo "Wiki content changed — syncing to Wiki.js"
-                            withCredentials([
-                                usernamePassword(credentialsId: 'wiki-credentials',
-                                                 usernameVariable: 'WIKI_EMAIL',
-                                                 passwordVariable: 'WIKI_PASSWORD')
-                            ]) {
-                                sh """
-                                    export WIKI_URL=http://localhost:8070
-                                    cd /var/opt/mechacorpsgames
-                                    python3 Src/Wiki/load_wiki_pages.py
-                                """
-                            }
-                            env.WIKI_SYNCED = "true"
-                        }
-                    }
-                }
-            }
-
-            stage('Deploy Monitoring') {
-                when { expression { env.MONITORING_CHANGED == 'true' } }
-                steps {
-                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        script {
-                            echo "Monitoring config changed — redeploying stack"
-
-                            sh """
-                                cd /var/opt/mechacorpsgames/Src/Monitoring
-                                docker-compose -f docker-compose.monitoring.yml --env-file /var/opt/mechacorpsgames/Src/.env.monitoring up -d --force-recreate
+                                docker-compose -p src -f docker-compose.auth.yml up -d --build --force-recreate auth
                                 sleep 5
 
                                 OK=false
                                 for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9090/-/ready)
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8081/health)
                                     if [ "\$RESULT" = "200" ]; then
-                                        echo "✓ Prometheus is ready"
+                                        echo "✓ Auth service health check passed"
                                         OK=true
                                         break
                                     fi
+                                    echo "Waiting for Auth service... (attempt \$i/10)"
                                     sleep 3
                                 done
                                 if [ "\$OK" = "false" ]; then
-                                    echo "✗ Prometheus health check failed"
+                                    echo "✗ Auth service health check failed"
+                                    docker logs src_auth_1 --tail 20 2>&1 || true
                                     exit 1
                                 fi
-
-                                curl -s -X POST http://localhost:9090/-/reload || true
-                                echo "✓ Monitoring stack redeployed"
                             """
-                            env.MONITORING_DEPLOYED = "true"
+                            env.AUTH_DEPLOYED = "true"
+                        }
+                    }
+                }
+            }
+
+            stage('Deploy AccountService') {
+                when { expression { env.ACCOUNT_SERVICE_CHANGED == 'true' } }
+                steps {
+                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                        script {
+                            echo "AccountService changed — rebuilding Docker container"
+
+                            sh """
+                                cd /var/opt/mechacorpsgames/Src
+                                docker-compose -p src -f docker-compose.account.yml up -d --build --force-recreate account-service
+                                sleep 5
+
+                                OK=false
+                                for i in \$(seq 1 10); do
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8082/health)
+                                    if [ "\$RESULT" = "200" ]; then
+                                        echo "✓ AccountService health check passed"
+                                        OK=true
+                                        break
+                                    fi
+                                    echo "Waiting for AccountService... (attempt \$i/10)"
+                                    sleep 3
+                                done
+                                if [ "\$OK" = "false" ]; then
+                                    echo "✗ AccountService health check failed"
+                                    docker logs src_account-service_1 --tail 20 2>&1 || true
+                                    exit 1
+                                fi
+                            """
+                            env.ACCOUNT_SERVICE_DEPLOYED = "true"
+                        }
+                    }
+                }
+            }
+
+            stage('Deploy AuctionHouse') {
+                when { expression { env.AUCTION_HOUSE_CHANGED == 'true' } }
+                steps {
+                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                        script {
+                            echo "AuctionHouse changed — rebuilding Docker container"
+
+                            sh """
+                                cd /var/opt/mechacorpsgames/Src
+                                docker-compose -p src -f docker-compose.auction.yml up -d --build --force-recreate auction-house
+                                sleep 5
+
+                                OK=false
+                                for i in \$(seq 1 10); do
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8083/health)
+                                    if [ "\$RESULT" = "200" ]; then
+                                        echo "✓ AuctionHouse health check passed"
+                                        OK=true
+                                        break
+                                    fi
+                                    echo "Waiting for AuctionHouse... (attempt \$i/10)"
+                                    sleep 3
+                                done
+                                if [ "\$OK" = "false" ]; then
+                                    echo "✗ AuctionHouse health check failed"
+                                    docker logs src_auction-house_1 --tail 20 2>&1 || true
+                                    exit 1
+                                fi
+                            """
+                            env.AUCTION_HOUSE_DEPLOYED = "true"
                         }
                     }
                 }
@@ -235,21 +229,21 @@ def call(Map config) {
             success {
                 script {
                     def deployNotes = []
-                    if (env.CRASH_REPORTING_DEPLOYED == "true") deployNotes << "CrashReporting+MCP"
-                    if (env.WIKI_SYNCED == "true") deployNotes << "Wiki"
-                    if (env.MONITORING_DEPLOYED == "true") deployNotes << "Monitoring"
+                    if (env.AUTH_DEPLOYED == "true") deployNotes << "Auth"
+                    if (env.ACCOUNT_SERVICE_DEPLOYED == "true") deployNotes << "AccountService"
+                    if (env.AUCTION_HOUSE_DEPLOYED == "true") deployNotes << "AuctionHouse"
 
                     if (deployNotes.isEmpty()) {
-                        echo "No service changes detected — nothing deployed"
+                        echo "No app service changes detected — nothing deployed"
                         return
                     }
 
                     discordNotify.success(
-                        title: "MechaCorps Services Deploy",
+                        title: "MechaCorps App Services Deploy",
                         message: "✅ Deployed: ${deployNotes.join(', ')}",
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
-                        environment: "production",
+                        environment: config.branch,
                         branch: config.branch,
                         version: env.SVC_VERSION
                     )
@@ -259,23 +253,23 @@ def call(Map config) {
                 script {
                     def deployed = []
                     def failed = []
-                    if (env.CRASH_REPORTING_DEPLOYED == "true") deployed << "CrashReporting+MCP"
-                    else if (env.CRASH_REPORTING_CHANGED == 'true') failed << "CrashReporting+MCP"
-                    if (env.WIKI_SYNCED == "true") deployed << "Wiki"
-                    else if (env.WIKI_CHANGED == 'true') failed << "Wiki"
-                    if (env.MONITORING_DEPLOYED == "true") deployed << "Monitoring"
-                    else if (env.MONITORING_CHANGED == 'true') failed << "Monitoring"
+                    if (env.AUTH_DEPLOYED == "true") deployed << "Auth"
+                    else if (env.AUTH_CHANGED == 'true') failed << "Auth"
+                    if (env.ACCOUNT_SERVICE_DEPLOYED == "true") deployed << "AccountService"
+                    else if (env.ACCOUNT_SERVICE_CHANGED == 'true') failed << "AccountService"
+                    if (env.AUCTION_HOUSE_DEPLOYED == "true") deployed << "AuctionHouse"
+                    else if (env.AUCTION_HOUSE_CHANGED == 'true') failed << "AuctionHouse"
 
                     def msg = "⚠️ Partial deploy"
                     if (deployed) msg += " — OK: ${deployed.join(', ')}"
                     if (failed) msg += " — FAILED: ${failed.join(', ')}"
 
                     discordNotify.failure(
-                        title: "MechaCorps Services Deploy",
+                        title: "MechaCorps App Services Deploy",
                         message: msg,
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
-                        environment: "production",
+                        environment: config.branch,
                         branch: config.branch
                     )
                 }
@@ -283,11 +277,11 @@ def call(Map config) {
             failure {
                 script {
                     discordNotify.failure(
-                        title: "MechaCorps Services Deploy",
+                        title: "MechaCorps App Services Deploy",
                         message: "❌ Deploy failed",
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
-                        environment: "production",
+                        environment: config.branch,
                         branch: config.branch
                     )
                 }
