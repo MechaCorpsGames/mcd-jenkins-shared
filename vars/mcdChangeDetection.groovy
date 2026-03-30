@@ -123,7 +123,7 @@ def categorize(String filePath) {
     for (prefix in serverPrefixes) {
         if (filePath.startsWith(prefix)) return 'server'
     }
-    if (filePath in ['Src/deploy.sh', 'Src/deploy.py', 'Src/go.work', 'Src/go.work.sum']) return 'server'
+    if (filePath in ['Src/deploy.sh', 'Src/deploy.py', 'Src/go.work', 'Src/go.work.sum', 'scripts/dev-pg.sh', 'flake.nix', 'flake.lock']) return 'server'
     if (filePath.startsWith('Src/docker-compose.proxy')) return 'server'
 
     // Auth service
