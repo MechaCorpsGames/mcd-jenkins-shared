@@ -176,6 +176,7 @@ def call(Map config) {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh '''
+                        unset GOROOT
                         nix develop . --command bash -c '
                             dev-pg.sh init && dev-pg.sh start || exit 1
                             trap "dev-pg.sh stop" EXIT
