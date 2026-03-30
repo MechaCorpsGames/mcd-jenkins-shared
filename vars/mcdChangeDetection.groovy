@@ -1,12 +1,13 @@
 // MechaCorps Change Detection - Shared Library
 // Detects which components changed between two git refs to enable
-// selective builds (server-only, client-only, or both).
+// selective builds and deploys (server, client, auth, wiki, monitoring, etc.).
 
 /**
  * Detect which components have changed files.
  *
  * @param baseRef  Git ref to diff against (e.g., 'origin/main', a commit SHA)
- * @return Map with: serverChanged (bool), clientChanged (bool), changedFiles (list)
+ * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
+ *         monitoringChanged, changedFiles (list)
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -15,8 +16,9 @@ def detect(String baseRef) {
     ).trim()
 
     if (changedFilesRaw.contains('__DIFF_FAILED__') || changedFilesRaw.isEmpty()) {
-        echo "⚠️ Change detection failed or no changes found — building everything"
-        return [serverChanged: true, clientChanged: true, changedFiles: []]
+        echo "Warning: Change detection failed or no changes found - building everything"
+        return [serverChanged: true, clientChanged: true, authChanged: true,
+                wikiChanged: true, monitoringChanged: true, changedFiles: []]
     }
 
     def changedFiles = changedFilesRaw.split('\n').collect { it.trim() }.findAll { it }
@@ -25,6 +27,9 @@ def detect(String baseRef) {
 
     def serverChanged = false
     def clientChanged = false
+    def authChanged = false
+    def wikiChanged = false
+    def monitoringChanged = false
     def unmatchedFiles = []
 
     for (file in changedFiles) {
@@ -40,6 +45,20 @@ def detect(String baseRef) {
                 serverChanged = true
                 clientChanged = true
                 break
+            case 'services-shared':
+                // Src/Shared/ affects Proxy (server), Auth, and crash-reporting
+                serverChanged = true
+                authChanged = true
+                break
+            case 'auth':
+                authChanged = true
+                break
+            case 'wiki':
+                wikiChanged = true
+                break
+            case 'monitoring':
+                monitoringChanged = true
+                break
             case 'docs':
                 break
             default:
@@ -49,19 +68,22 @@ def detect(String baseRef) {
     }
 
     if (unmatchedFiles) {
-        echo "⚠️ Unmatched files (triggering both builds):"
+        echo "Warning: Unmatched files (triggering both builds):"
         unmatchedFiles.each { echo "  ${it}" }
         serverChanged = true
         clientChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged} ==="
-    return [serverChanged: serverChanged, clientChanged: clientChanged, changedFiles: changedFiles]
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged} ==="
+    return [serverChanged: serverChanged, clientChanged: clientChanged,
+            authChanged: authChanged, wikiChanged: wikiChanged,
+            monitoringChanged: monitoringChanged, changedFiles: changedFiles]
 }
 
 /**
  * Categorize a file path into a component.
- * @return 'server', 'client', 'shared', 'docs', or 'unknown'
+ * @return 'server', 'client', 'shared', 'services-shared', 'auth',
+ *         'wiki', 'monitoring', 'docs', or 'unknown'
  */
 def categorize(String filePath) {
     // Shared paths (trigger both server and client builds)
@@ -70,13 +92,20 @@ def categorize(String filePath) {
         if (filePath.startsWith(prefix)) return 'shared'
     }
 
+    // Go shared library (affects Proxy, Auth, CrashReporting, MCPServer)
+    if (filePath.startsWith('Src/Shared/')) return 'services-shared'
+
     // Server-only paths
     def serverPrefixes = ['Src/GameServer/', 'Src/Proxy/', 'Src/TestClient/']
     for (prefix in serverPrefixes) {
         if (filePath.startsWith(prefix)) return 'server'
     }
-    if (filePath in ['Src/deploy.sh', 'Src/go.work', 'Src/go.work.sum']) return 'server'
-    if (filePath.startsWith('Src/docker-compose')) return 'server'
+    if (filePath in ['Src/deploy.sh', 'Src/deploy.py', 'Src/go.work', 'Src/go.work.sum']) return 'server'
+    if (filePath.startsWith('Src/docker-compose.proxy')) return 'server'
+
+    // Auth service
+    if (filePath.startsWith('Src/Auth/')) return 'auth'
+    if (filePath.startsWith('Src/docker-compose.auth')) return 'auth'
 
     // Client-only paths
     def clientPrefixes = [
@@ -96,10 +125,19 @@ def categorize(String filePath) {
     ]
     if (filePath in clientExact) return 'client'
 
+    // Wiki content
+    if (filePath.startsWith('docs/wiki/')) return 'wiki'
+    if (filePath.startsWith('Src/Wiki/')) return 'wiki'
+
+    // Monitoring stack
+    if (filePath.startsWith('Src/Monitoring/')) return 'monitoring'
+
     // Documentation / tooling paths (no build needed)
+    // CrashReporting and MCPServer have their own pipeline (MCDCrashReporting)
     def docPrefixes = [
         'docs/', '.github/', 'reports/',
-        'Src/Wiki/', 'Src/CrashReporting/', 'Src/MCPServer/',
+        'Src/CrashReporting/', 'Src/MCPServer/',
+        'Src/AccountService/', 'Src/AuctionHouse/',
     ]
     for (prefix in docPrefixes) {
         if (filePath.startsWith(prefix)) return 'docs'
@@ -110,6 +148,10 @@ def categorize(String filePath) {
         'cleanup-tracked-files.sh', 'verify-gitignore.sh',
     ]
     if (filePath in docExact) return 'docs'
+
+    // Other docker-compose files (crash-reporting has its own pipeline)
+    if (filePath.startsWith('Src/docker-compose.crash-reporting')) return 'docs'
+    if (filePath.startsWith('Src/docker-compose.monitoring')) return 'monitoring'
 
     // Root .uid and audit files
     if (!filePath.contains('/') && (filePath.endsWith('.uid') || filePath.endsWith('_audit.gd'))) return 'docs'
