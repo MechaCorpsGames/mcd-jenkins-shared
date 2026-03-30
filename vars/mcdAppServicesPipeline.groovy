@@ -162,6 +162,10 @@ def call(Map config) {
                             echo "AccountService changed — rebuilding Docker container"
 
                             sh """
+                                # Ensure the account database exists (shares postgres with Auth)
+                                docker exec src_postgres_1 psql -U mechacorps -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'mechacorps_account'" | grep -q 1 || \
+                                    docker exec src_postgres_1 psql -U mechacorps -d postgres -c "CREATE DATABASE mechacorps_account;" || true
+
                                 cd /var/opt/mechacorpsgames/Src
                                 docker-compose -p src -f docker-compose.account.yml up -d --build --force-recreate account-service
                                 sleep 5
