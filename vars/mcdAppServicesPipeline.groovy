@@ -6,8 +6,47 @@
 def call(Map config) {
     // Required config:
     //   branch: 'main', 'release', 'features/card', etc.
+    //   environment: 'main', 'release', 'feature-card', 'feature-backend'
     //   webhookToken: 'mcdappservices-main'
     //   jobName: 'MCDAppServices-Main'
+
+    // Shared environments (release + main) use default ports on the 'src' compose project.
+    // Feature branches use per-env .env files with port offsets and isolated compose projects.
+    def isShared = (config.environment == 'main' || config.environment == 'release')
+    def srcDir = '/var/opt/mechacorpsgames/Src'
+
+    // Compose project names
+    def authProject   = isShared ? 'src' : "mcd-${config.environment}-auth"
+    def accountProject = isShared ? 'src' : "mcd-${config.environment}-account"
+    def auctionProject = isShared ? 'src' : "mcd-${config.environment}-auction"
+
+    // Env file flags (empty string for shared = use defaults)
+    def authEnvFlag    = isShared ? '' : "--env-file .env.auth.${config.environment}"
+    def accountEnvFlag = isShared ? '' : "--env-file .env.account.${config.environment}"
+    def auctionEnvFlag = isShared ? '' : "--env-file .env.auction.${config.environment}"
+
+    // Health check ports
+    def authPort    = isShared ? '8081' : null
+    def accountPort = isShared ? '8082' : null
+    def auctionPort = isShared ? '8083' : null
+
+    // For feature branches, read ports from env files
+    if (!isShared) {
+        // Port offsets: base + 81/82/83
+        // feature-card base=44000, feature-backend base=45000
+        def basePort = config.environment == 'feature-card' ? 44000 : 45000
+        authPort    = "${basePort + 81}"
+        accountPort = "${basePort + 82}"
+        auctionPort = "${basePort + 83}"
+    }
+
+    // Container name prefixes (compose project name with underscores)
+    def authContainer    = "${authProject}_auth_1"
+    def accountContainer = "${accountProject}_account-service_1"
+    def auctionContainer = "${auctionProject}_auction-house_1"
+
+    // Postgres container (auth stack owns postgres)
+    def postgresContainer = "${authProject}_postgres_1"
 
     pipeline {
         agent {
@@ -25,6 +64,7 @@ def call(Map config) {
             DISCORD_WEBHOOK = credentials('discord-webhook-url')
             JENKINS_URL_BASE = "https://jenkins.mechacorpsgames.com"
             BRANCH_NAME = "${config.branch}"
+            DEPLOY_ENV = "${config.environment}"
         }
 
         triggers {
@@ -75,7 +115,7 @@ def call(Map config) {
                             }
                         }
 
-                        currentBuild.description = "${commitMsg}\nby ${author}"
+                        currentBuild.description = "${commitMsg}\nby ${author} → ${config.environment}"
                     }
                 }
             }
@@ -124,18 +164,18 @@ def call(Map config) {
                 steps {
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                         script {
-                            echo "Auth service changed — rebuilding Docker container"
+                            echo "Auth service changed — rebuilding Docker container (${config.environment})"
 
                             sh """
-                                cd /var/opt/mechacorpsgames/Src
-                                docker-compose -p src -f docker-compose.auth.yml up -d --build --force-recreate auth
+                                cd ${srcDir}
+                                docker-compose -p ${authProject} -f docker-compose.auth.yml ${authEnvFlag} up -d --build --force-recreate auth
                                 sleep 5
 
                                 OK=false
                                 for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8081/health)
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${authPort}/health)
                                     if [ "\$RESULT" = "200" ]; then
-                                        echo "✓ Auth service health check passed"
+                                        echo "✓ Auth service health check passed (${config.environment} :${authPort})"
                                         OK=true
                                         break
                                     fi
@@ -143,8 +183,8 @@ def call(Map config) {
                                     sleep 3
                                 done
                                 if [ "\$OK" = "false" ]; then
-                                    echo "✗ Auth service health check failed"
-                                    docker logs src_auth_1 --tail 20 2>&1 || true
+                                    echo "✗ Auth service health check failed (${config.environment} :${authPort})"
+                                    docker logs ${authContainer} --tail 20 2>&1 || true
                                     exit 1
                                 fi
                             """
@@ -159,22 +199,22 @@ def call(Map config) {
                 steps {
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                         script {
-                            echo "AccountService changed — rebuilding Docker container"
+                            echo "AccountService changed — rebuilding Docker container (${config.environment})"
 
                             sh """
                                 # Ensure the account database exists (shares postgres with Auth)
-                                docker exec src_postgres_1 psql -U mechacorps -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'mechacorps_account'" | grep -q 1 || \
-                                    docker exec src_postgres_1 psql -U mechacorps -d postgres -c "CREATE DATABASE mechacorps_account;" || true
+                                docker exec ${postgresContainer} psql -U mechacorps -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'mechacorps_account'" | grep -q 1 || \
+                                    docker exec ${postgresContainer} psql -U mechacorps -d postgres -c "CREATE DATABASE mechacorps_account;" || true
 
-                                cd /var/opt/mechacorpsgames/Src
-                                docker-compose -p src -f docker-compose.account.yml up -d --build --force-recreate account-service
+                                cd ${srcDir}
+                                docker-compose -p ${accountProject} -f docker-compose.account.yml ${accountEnvFlag} up -d --build --force-recreate account-service
                                 sleep 5
 
                                 OK=false
                                 for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8082/health)
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${accountPort}/health)
                                     if [ "\$RESULT" = "200" ]; then
-                                        echo "✓ AccountService health check passed"
+                                        echo "✓ AccountService health check passed (${config.environment} :${accountPort})"
                                         OK=true
                                         break
                                     fi
@@ -182,8 +222,8 @@ def call(Map config) {
                                     sleep 3
                                 done
                                 if [ "\$OK" = "false" ]; then
-                                    echo "✗ AccountService health check failed"
-                                    docker logs src_account-service_1 --tail 20 2>&1 || true
+                                    echo "✗ AccountService health check failed (${config.environment} :${accountPort})"
+                                    docker logs ${accountContainer} --tail 20 2>&1 || true
                                     exit 1
                                 fi
                             """
@@ -198,18 +238,18 @@ def call(Map config) {
                 steps {
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                         script {
-                            echo "AuctionHouse changed — rebuilding Docker container"
+                            echo "AuctionHouse changed — rebuilding Docker container (${config.environment})"
 
                             sh """
-                                cd /var/opt/mechacorpsgames/Src
-                                docker-compose -p src -f docker-compose.auction.yml up -d --build --force-recreate auction-house
+                                cd ${srcDir}
+                                docker-compose -p ${auctionProject} -f docker-compose.auction.yml ${auctionEnvFlag} up -d --build --force-recreate auction-house
                                 sleep 5
 
                                 OK=false
                                 for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8083/health)
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${auctionPort}/health)
                                     if [ "\$RESULT" = "200" ]; then
-                                        echo "✓ AuctionHouse health check passed"
+                                        echo "✓ AuctionHouse health check passed (${config.environment} :${auctionPort})"
                                         OK=true
                                         break
                                     fi
@@ -217,8 +257,8 @@ def call(Map config) {
                                     sleep 3
                                 done
                                 if [ "\$OK" = "false" ]; then
-                                    echo "✗ AuctionHouse health check failed"
-                                    docker logs src_auction-house_1 --tail 20 2>&1 || true
+                                    echo "✗ AuctionHouse health check failed (${config.environment} :${auctionPort})"
+                                    docker logs ${auctionContainer} --tail 20 2>&1 || true
                                     exit 1
                                 fi
                             """
@@ -247,7 +287,7 @@ def call(Map config) {
                         message: "✅ Deployed: ${deployNotes.join(', ')}",
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
-                        environment: config.branch,
+                        environment: config.environment,
                         branch: config.branch,
                         version: env.SVC_VERSION
                     )
@@ -273,7 +313,7 @@ def call(Map config) {
                         message: msg,
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
-                        environment: config.branch,
+                        environment: config.environment,
                         branch: config.branch
                     )
                 }
@@ -285,7 +325,7 @@ def call(Map config) {
                         message: "❌ Deploy failed",
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
-                        environment: config.branch,
+                        environment: config.environment,
                         branch: config.branch
                     )
                 }
