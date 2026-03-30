@@ -10,35 +10,32 @@ def call(Map config) {
     //   webhookToken: 'mcdappservices-main'
     //   jobName: 'MCDAppServices-Main'
 
-    // Shared environments (release + main) use default ports on the 'src' compose project.
-    // Feature branches use per-env .env files with port offsets and isolated compose projects.
-    def isShared = (config.environment == 'main' || config.environment == 'release')
+    // All environments use per-env .env files and isolated compose projects.
+    // Port offsets from environments.toml: Auth=base+81, Account=base+82, Auction=base+83
     def srcDir = '/var/opt/mechacorpsgames/Src'
 
-    // Compose project names
-    def authProject   = isShared ? 'src' : "mcd-${config.environment}-auth"
-    def accountProject = isShared ? 'src' : "mcd-${config.environment}-account"
-    def auctionProject = isShared ? 'src' : "mcd-${config.environment}-auction"
+    def basePorts = [
+        'release':         42000,
+        'main':            43000,
+        'feature-card':    44000,
+        'feature-backend': 45000,
+    ]
+    def basePort = basePorts[config.environment]
 
-    // Env file flags (empty string for shared = use defaults)
-    def authEnvFlag    = isShared ? '' : "--env-file .env.auth.${config.environment}"
-    def accountEnvFlag = isShared ? '' : "--env-file .env.account.${config.environment}"
-    def auctionEnvFlag = isShared ? '' : "--env-file .env.auction.${config.environment}"
+    // Compose project names
+    def authProject    = "mcd-${config.environment}-auth"
+    def accountProject = "mcd-${config.environment}-account"
+    def auctionProject = "mcd-${config.environment}-auction"
+
+    // Env file flags
+    def authEnvFlag    = "--env-file .env.auth.${config.environment}"
+    def accountEnvFlag = "--env-file .env.account.${config.environment}"
+    def auctionEnvFlag = "--env-file .env.auction.${config.environment}"
 
     // Health check ports
-    def authPort    = isShared ? '8081' : null
-    def accountPort = isShared ? '8082' : null
-    def auctionPort = isShared ? '8083' : null
-
-    // For feature branches, read ports from env files
-    if (!isShared) {
-        // Port offsets: base + 81/82/83
-        // feature-card base=44000, feature-backend base=45000
-        def basePort = config.environment == 'feature-card' ? 44000 : 45000
-        authPort    = "${basePort + 81}"
-        accountPort = "${basePort + 82}"
-        auctionPort = "${basePort + 83}"
-    }
+    def authPort    = "${basePort + 81}"
+    def accountPort = "${basePort + 82}"
+    def auctionPort = "${basePort + 83}"
 
     // Container name prefixes (compose project name with underscores)
     def authContainer    = "${authProject}_auth_1"
