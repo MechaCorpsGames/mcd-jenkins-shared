@@ -88,13 +88,14 @@ RUN groupadd -g 112 jenkins && \
     echo 'jenkins ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/jenkins && \
     chown -R jenkins:jenkins /home/jenkins
 
-# ── Layer 7: Nix package manager (multi-user) ────────────────────────────────
-# Determinate Nix installer: multi-user, Docker-aware (--init none skips systemd).
-# At runtime /nix is bind-mounted from the host for persistent store caching.
+# ── Layer 7: Nix package manager (single-user for jenkins) ───────────────────
+# Determinate Nix installer: single-user, Docker-aware (--init none skips systemd).
+# Ownership transferred to jenkins so nix commands work without root.
 RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix \
     | sh -s -- install linux --no-confirm --init none \
     --extra-conf "sandbox = false" \
-    --extra-conf "trusted-users = root jenkins"
+    --extra-conf "trusted-users = root jenkins" \
+    && chown -R 103:112 /nix
 
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
     PATH=/opt/steamcmd:/nix/var/nix/profiles/default/bin:/usr/local/go/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:${PATH}
