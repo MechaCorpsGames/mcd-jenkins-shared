@@ -7,7 +7,7 @@
  *
  * @param baseRef  Git ref to diff against (e.g., 'origin/main', a commit SHA)
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
- *         monitoringChanged, changedFiles (list)
+ *         monitoringChanged, crashReportingChanged, changedFiles (list)
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -18,7 +18,8 @@ def detect(String baseRef) {
     if (changedFilesRaw.contains('__DIFF_FAILED__') || changedFilesRaw.isEmpty()) {
         echo "Warning: Change detection failed or no changes found - building everything"
         return [serverChanged: true, clientChanged: true, authChanged: true,
-                wikiChanged: true, monitoringChanged: true, changedFiles: []]
+                wikiChanged: true, monitoringChanged: true,
+                crashReportingChanged: true, changedFiles: []]
     }
 
     def changedFiles = changedFilesRaw.split('\n').collect { it.trim() }.findAll { it }
@@ -30,6 +31,7 @@ def detect(String baseRef) {
     def authChanged = false
     def wikiChanged = false
     def monitoringChanged = false
+    def crashReportingChanged = false
     def unmatchedFiles = []
 
     for (file in changedFiles) {
@@ -49,6 +51,10 @@ def detect(String baseRef) {
                 // Src/Shared/ affects Proxy (server), Auth, and crash-reporting
                 serverChanged = true
                 authChanged = true
+                crashReportingChanged = true
+                break
+            case 'crash-reporting':
+                crashReportingChanged = true
                 break
             case 'auth':
                 authChanged = true
@@ -74,16 +80,18 @@ def detect(String baseRef) {
         clientChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged} ==="
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
-            monitoringChanged: monitoringChanged, changedFiles: changedFiles]
+            monitoringChanged: monitoringChanged,
+            crashReportingChanged: crashReportingChanged,
+            changedFiles: changedFiles]
 }
 
 /**
  * Categorize a file path into a component.
  * @return 'server', 'client', 'shared', 'services-shared', 'auth',
- *         'wiki', 'monitoring', 'docs', or 'unknown'
+ *         'crash-reporting', 'wiki', 'monitoring', 'docs', or 'unknown'
  */
 def categorize(String filePath) {
     // Shared paths (trigger both server and client builds)
@@ -132,11 +140,13 @@ def categorize(String filePath) {
     // Monitoring stack
     if (filePath.startsWith('Src/Monitoring/')) return 'monitoring'
 
+    // CrashReporting + MCP Server (deployed by MCDServices pipeline)
+    if (filePath.startsWith('Src/CrashReporting/') || filePath.startsWith('Src/MCPServer/')) return 'crash-reporting'
+    if (filePath.startsWith('Src/docker-compose.crash-reporting')) return 'crash-reporting'
+
     // Documentation / tooling paths (no build needed)
-    // CrashReporting and MCPServer have their own pipeline (MCDCrashReporting)
     def docPrefixes = [
         'docs/', '.github/', 'reports/',
-        'Src/CrashReporting/', 'Src/MCPServer/',
         'Src/AccountService/', 'Src/AuctionHouse/',
     ]
     for (prefix in docPrefixes) {
@@ -149,8 +159,6 @@ def categorize(String filePath) {
     ]
     if (filePath in docExact) return 'docs'
 
-    // Other docker-compose files (crash-reporting has its own pipeline)
-    if (filePath.startsWith('Src/docker-compose.crash-reporting')) return 'docs'
     if (filePath.startsWith('Src/docker-compose.monitoring')) return 'monitoring'
 
     // Root .uid and audit files

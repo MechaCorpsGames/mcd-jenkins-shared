@@ -1,7 +1,7 @@
-// Deprecated: Use mcdBackendServicesPipeline instead.
+// Deprecated: Use mcdServicesPipeline instead.
 // This file exists for backward compatibility with existing Jenkins job configs.
 def call(Map config) {
-    mcdBackendServicesPipeline(config)
+    mcdServicesPipeline(config)
 }
 
 return this

@@ -116,23 +116,15 @@ def call(Map config) {
                         if (!baseRef || baseRef.startsWith('0000000')) {
                             echo "No valid before SHA — building everything"
                             env.SERVER_CHANGED = 'true'
-                            env.AUTH_CHANGED = 'true'
-                            env.WIKI_CHANGED = 'true'
-                            env.MONITORING_CHANGED = 'true'
                         } else {
                             // Ensure the before SHA is available locally
                             sh "git fetch origin ${baseRef} 2>/dev/null || true"
                             def changes = mcdChangeDetection.detect(baseRef)
                             env.SERVER_CHANGED = changes.serverChanged.toString()
-                            env.AUTH_CHANGED = changes.authChanged.toString()
-                            env.WIKI_CHANGED = changes.wikiChanged.toString()
-                            env.MONITORING_CHANGED = changes.monitoringChanged.toString()
                         }
 
-                        def anyWork = (env.SERVER_CHANGED == 'true' || env.AUTH_CHANGED == 'true' ||
-                                       env.WIKI_CHANGED == 'true' || env.MONITORING_CHANGED == 'true')
-                        if (!anyWork) {
-                            currentBuild.description += "\n⏭️ No server/service changes — skipped"
+                        if (env.SERVER_CHANGED != 'true') {
+                            currentBuild.description += "\n⏭️ No server changes — skipped"
                             currentBuild.result = 'NOT_BUILT'
                         }
                     }
@@ -481,129 +473,20 @@ EOF
                     """
                 }
             }
-
-            // ================================================================
-            // Service deployments — run independently of server build
-            // ================================================================
-
-            stage('Deploy Auth (if changed)') {
-                when { expression { env.AUTH_CHANGED == 'true' } }
-                steps {
-                    script {
-                        echo "Auth service changed — rebuilding Docker container"
-                        discordNotify.simple("🔄 Rebuilding Auth service for ${config.environment}", "16776960")
-
-                        sh """
-                            cd /var/opt/mechacorpsgames/Src
-                            docker-compose -p src -f docker-compose.auth.yml up -d --build --force-recreate auth
-                            sleep 5
-
-                            # Health check
-                            OK=false
-                            for i in \$(seq 1 10); do
-                                RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8081/health)
-                                if [ "\$RESULT" = "200" ]; then
-                                    echo "✓ Auth service health check passed"
-                                    OK=true
-                                    break
-                                fi
-                                echo "Waiting for Auth service... (attempt \$i/10)"
-                                sleep 3
-                            done
-                            if [ "\$OK" = "false" ]; then
-                                echo "✗ Auth service health check failed"
-                                docker logs src_auth_1 --tail 20 2>&1 || true
-                                exit 1
-                            fi
-                        """
-                        env.AUTH_DEPLOYED = "true"
-                    }
-                }
-            }
-
-            stage('Sync Wiki (if changed)') {
-                when { expression { env.WIKI_CHANGED == 'true' } }
-                steps {
-                    script {
-                        echo "Wiki content changed — syncing to Wiki.js"
-                        try {
-                            withCredentials([
-                                usernamePassword(credentialsId: 'wiki-credentials',
-                                                 usernameVariable: 'WIKI_EMAIL',
-                                                 passwordVariable: 'WIKI_PASSWORD')
-                            ]) {
-                                sh """
-                                    export WIKI_URL=http://localhost:8070
-                                    cd /var/opt/mechacorpsgames
-                                    python3 Src/Wiki/load_wiki_pages.py
-                                """
-                            }
-                            env.WIKI_SYNCED = "true"
-                        } catch (Exception e) {
-                            echo "Warning: Wiki sync skipped — 'wiki-credentials' not configured in Jenkins"
-                            echo "Add a Username/Password credential with ID 'wiki-credentials' to enable auto-sync"
-                        }
-                    }
-                }
-            }
-
-            stage('Deploy Monitoring (if changed)') {
-                when { expression { env.MONITORING_CHANGED == 'true' } }
-                steps {
-                    script {
-                        echo "Monitoring config changed — redeploying stack"
-
-                        sh """
-                            cd /var/opt/mechacorpsgames/Src/Monitoring
-                            docker-compose -f docker-compose.monitoring.yml --env-file /var/opt/mechacorpsgames/Src/.env.monitoring up -d --force-recreate
-                            sleep 5
-
-                            # Verify Prometheus is up
-                            OK=false
-                            for i in \$(seq 1 10); do
-                                RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9090/-/ready)
-                                if [ "\$RESULT" = "200" ]; then
-                                    echo "✓ Prometheus is ready"
-                                    OK=true
-                                    break
-                                fi
-                                sleep 3
-                            done
-                            if [ "\$OK" = "false" ]; then
-                                echo "✗ Prometheus health check failed"
-                                exit 1
-                            fi
-
-                            # Reload Prometheus config (in case only prometheus.yml changed)
-                            curl -s -X POST http://localhost:9090/-/reload || true
-                            echo "✓ Monitoring stack redeployed"
-                        """
-                        env.MONITORING_DEPLOYED = "true"
-                    }
-                }
-            }
         }
 
         post {
             success {
                 script {
-                    def deployNotes = []
-                    if (env.SERVER_CHANGED == 'true') {
-                        def proxyNote = (env.PROXY_DEPLOYED == "true") ? " + Proxy" : ""
-                        deployNotes << "Server v${env.SERVER_VERSION}${proxyNote}"
-                    }
-                    if (env.AUTH_DEPLOYED == "true") deployNotes << "Auth"
-                    if (env.WIKI_SYNCED == "true") deployNotes << "Wiki"
-                    if (env.MONITORING_DEPLOYED == "true") deployNotes << "Monitoring"
-
-                    if (deployNotes.isEmpty()) {
-                        echo "No changes detected — nothing deployed"
+                    if (env.SERVER_CHANGED != 'true') {
+                        echo "No server changes detected — nothing deployed"
                         return
                     }
 
+                    def proxyNote = (env.PROXY_DEPLOYED == "true") ? " + Proxy" : ""
                     discordNotify.success(
                         title: "MechaCorps Server Build",
-                        message: "✅ Deployed to ${config.environment}: ${deployNotes.join(', ')}",
+                        message: "✅ Deployed Server v${env.SERVER_VERSION}${proxyNote} to ${config.environment}",
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
                         environment: config.environment,
