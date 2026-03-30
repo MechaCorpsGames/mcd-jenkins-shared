@@ -9,12 +9,17 @@ def call(Map config) {
     //   serverUrl: 'wss://dev.mechacorpsgames.com' or 'wss://play.mechacorpsgames.com'
     //   webhookToken: 'mcdclient-main' or 'mcdclient-release'
     //   jobName: 'MCDClient-Main' or 'MCDClient-Release'
+    // Optional config:
+    //   steamUpload: 'auto', 'manual', or 'disabled' (default: disabled)
+    //     auto    = upload to Steam after every successful build
+    //     manual  = pause for approval before uploading
+    //     disabled/null = skip Steam upload entirely
 
     pipeline {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /var/lib/jenkins/.local/share/godot/export_templates:/home/jenkins/.local/share/godot/export_templates:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src -v /nix:/nix:rw --network host --group-add 111 --group-add 995'
+                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /var/lib/jenkins/.steam:/home/jenkins/.steam:rw -v /var/lib/jenkins/.local/share/godot/export_templates:/home/jenkins/.local/share/godot/export_templates:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src -v /nix:/nix:rw --network host --group-add 111 --group-add 995'
             }
         }
 
@@ -40,6 +45,7 @@ def call(Map config) {
             DEPLOY_ENV = "${config.environment}"
             SERVER_URL = "${config.serverUrl}"
             BUILD_PHASE = "Initializing"
+            STEAM_CREDENTIALS = credentials('bde2ac32-eb1e-4a94-a8d0-c77e8f5be7e5')
         }
 
         triggers {
@@ -552,6 +558,83 @@ EOF
                     }
                 }
             }
+
+            stage('Upload to Steam') {
+                when {
+                    expression {
+                        env.CLIENT_CHANGED == 'true' &&
+                        config.steamUpload != 'disabled' &&
+                        config.steamUpload != null
+                    }
+                }
+                steps {
+                    script {
+                        env.BUILD_PHASE = 'Upload to Steam'
+
+                        def steamBranch = ''
+                        if (config.branch == 'release') {
+                            steamBranch = 'alpha'
+                        } else if (config.branch == 'main') {
+                            steamBranch = 'dev'
+                        }
+
+                        if (!steamBranch) {
+                            echo "No Steam branch mapping for '${config.branch}' — skipping"
+                            return
+                        }
+
+                        if (config.steamUpload == 'manual') {
+                            try {
+                                timeout(time: 1, unit: 'HOURS') {
+                                    input message: "Upload v${env.CLIENT_VERSION} to Steam '${steamBranch}'?",
+                                          ok: 'Upload to Steam'
+                                }
+                            } catch (err) {
+                                echo "Steam upload skipped (not approved or timed out)"
+                                return
+                            }
+                        }
+
+                        sh """
+                            rm -rf steam_content steam_output steam_build
+                            mkdir -p steam_content/windows steam_content/linux steam_build
+
+                            ARTIFACT_BASE="artifacts/${BRANCH_SAFE}/v${CLIENT_VERSION}"
+                            unzip -o \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_SAFE}-Windows-v${CLIENT_VERSION}.zip \
+                                -d steam_content/windows/
+                            unzip -o \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_SAFE}-Linux-v${CLIENT_VERSION}.zip \
+                                -d steam_content/linux/
+
+                            cp steam/app_build.vdf steam_build/
+                            cp steam/depot_windows.vdf steam_build/
+                            cp steam/depot_linux.vdf steam_build/
+
+                            sed -i 's/__DESCRIPTION__/v${CLIENT_VERSION} build ${BUILD_NUMBER} (${BRANCH_NAME})/g' \
+                                steam_build/app_build.vdf
+                            sed -i 's/__BRANCH__/${steamBranch}/g' steam_build/app_build.vdf
+
+                            echo "=== Steam build VDF ==="
+                            cat steam_build/app_build.vdf
+
+                            echo ""
+                            echo "=== Steam content ==="
+                            find steam_content -type f | sort
+                        """
+
+                        retry(2) {
+                            sh """
+                                steamcmd.sh \
+                                    +login "\${STEAM_CREDENTIALS_USR}" "\${STEAM_CREDENTIALS_PSW}" \
+                                    +run_app_build \${WORKSPACE}/steam_build/app_build.vdf \
+                                    +quit
+                            """
+                        }
+
+                        echo "Uploaded v${env.CLIENT_VERSION} to Steam branch '${steamBranch}'"
+                        env.STEAM_UPLOAD_BRANCH = steamBranch
+                    }
+                }
+            }
         }
 
         post {
@@ -571,7 +654,8 @@ EOF
                         branch: config.branch,
                         version: env.CLIENT_VERSION,
                         serverUrl: config.serverUrl,
-                        libSize: linuxSize
+                        libSize: linuxSize,
+                        steamBranch: env.STEAM_UPLOAD_BRANCH
                     )
                 }
             }

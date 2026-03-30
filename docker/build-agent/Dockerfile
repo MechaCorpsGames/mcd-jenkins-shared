@@ -72,6 +72,16 @@ RUN curl -fsSL "https://github.com/docker/compose/releases/download/1.29.2/docke
 
 RUN curl -fsSL https://sentry.io/get-cli/ | bash || true
 
+# ── Layer 5b: SteamCMD ───────────────────────────────────────────────────────
+RUN dpkg --add-architecture i386 && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        lib32gcc-s1 \
+    && rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /opt/steamcmd && \
+    curl -fsSL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" \
+        | tar -xz -C /opt/steamcmd && \
+    /opt/steamcmd/steamcmd.sh +quit || true
+
 # ── Layer 6: Jenkins user (UID/GID matching host) ─────────────────────────────
 RUN groupadd -g 112 jenkins && \
     useradd -u 103 -g 112 -m -d /home/jenkins -s /bin/bash jenkins && \
@@ -87,7 +97,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/
     --extra-conf "trusted-users = root jenkins"
 
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
-    PATH=/nix/var/nix/profiles/default/bin:/usr/local/go/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:${PATH}
+    PATH=/opt/steamcmd:/nix/var/nix/profiles/default/bin:/usr/local/go/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:${PATH}
 
 USER jenkins
 WORKDIR /home/jenkins

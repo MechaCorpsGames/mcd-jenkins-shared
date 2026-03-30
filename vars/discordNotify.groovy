@@ -73,6 +73,9 @@ def success(Map config) {
     if (config.libSize) {
         fields << [name: "Library Size", value: config.libSize, inline: true]
     }
+    if (config.steamBranch) {
+        fields << [name: "Steam", value: "Uploaded to `${config.steamBranch}`", inline: true]
+    }
 
     fields << [name: "Duration", value: duration, inline: true]
     fields << [name: "Commit", value: "`${shortSha}` ${commitMsg}", inline: false]
