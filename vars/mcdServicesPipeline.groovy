@@ -35,8 +35,7 @@ def call(Map config) {
                     [key: 'commit_message', value: '$.head_commit.message'],
                     [key: 'commit_author', value: '$.head_commit.author.name'],
                     [key: 'pusher_name', value: '$.pusher.name'],
-                    [key: 'before_sha', value: '$.before'],
-                    [key: 'changed_files', value: '$.commits[*].["modified","added","removed"][*]']
+                    [key: 'before_sha', value: '$.before']
                 ],
                 causeString: "Triggered by push to ${config.branch}",
                 token: config.webhookToken,
@@ -44,8 +43,8 @@ def call(Map config) {
                 printContributedVariables: true,
                 printPostContent: false,
                 silentResponse: false,
-                regexpFilterText: '$ref $changed_files',
-                regexpFilterExpression: "refs/heads/${config.branch}.*(Src/Shared|Src/CrashReporting|Src/MCPServer|Src/Monitoring|Src/Wiki|docs/wiki|Src/docker-compose\\.(crash-reporting|monitoring)).*"
+                regexpFilterText: '$ref',
+                regexpFilterExpression: "refs/heads/${config.branch}"
             )
         }
 
