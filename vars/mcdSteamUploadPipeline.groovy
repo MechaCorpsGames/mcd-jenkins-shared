@@ -129,6 +129,10 @@ def call(Map config) {
                         unzip -o "\$WIN_ZIP" -d steam_content/windows/
                         unzip -o "\$LIN_ZIP" -d steam_content/linux/
 
+                        # Include steam_appid.txt in both depots
+                        cp steam_appid.txt steam_content/windows/
+                        cp steam_appid.txt steam_content/linux/
+
                         cp steam/app_build.vdf steam_build/
                         cp steam/depot_windows.vdf steam_build/
                         cp steam/depot_linux.vdf steam_build/
