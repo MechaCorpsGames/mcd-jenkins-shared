@@ -129,9 +129,9 @@ def call(Map config) {
                         unzip -o "\$WIN_ZIP" -d steam_content/windows/
                         unzip -o "\$LIN_ZIP" -d steam_content/linux/
 
-                        # Include steam_appid.txt in both depots
-                        cp steam_appid.txt steam_content/windows/
-                        cp steam_appid.txt steam_content/linux/
+                        # Include Steam API redistributable libraries
+                        cp addons/godotsteam/win64/steam_api64.dll steam_content/windows/
+                        cp addons/godotsteam/linux64/libsteam_api.so steam_content/linux/
 
                         cp steam/app_build.vdf steam_build/
                         cp steam/depot_windows.vdf steam_build/

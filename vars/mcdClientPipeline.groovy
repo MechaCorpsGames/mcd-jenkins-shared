@@ -391,6 +391,7 @@ def call(Map config) {
                         cp bin/lib/Windows-x86_64/libcrypto-3-x64.dll \${ARTIFACT_BASE}/game/Windows/
                         cp bin/lib/Windows-x86_64/libssl-3-x64.dll \${ARTIFACT_BASE}/game/Windows/
                         cp bin/lib/Windows-x86_64/libwinpthread-1.dll \${ARTIFACT_BASE}/game/Windows/
+                        cp addons/godotsteam/win64/steam_api64.dll \${ARTIFACT_BASE}/game/Windows/
 
                         cat > \${ARTIFACT_BASE}/game/Windows/MCDCoreExt.gdextension << 'GDEXT'
 [configuration]
@@ -403,6 +404,7 @@ GDEXT
 
                         mkdir -p \${ARTIFACT_BASE}/game/Linux/lib/Linux-x86_64
                         cp bin/lib/Linux-x86_64/libMCDCoreExt.so \${ARTIFACT_BASE}/game/Linux/lib/Linux-x86_64/
+                        cp addons/godotsteam/linux64/libsteam_api.so \${ARTIFACT_BASE}/game/Linux/
 
                         cat > \${ARTIFACT_BASE}/game/Linux/MCDCoreExt.gdextension << 'GDEXT'
 [configuration]
