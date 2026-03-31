@@ -10,7 +10,7 @@ def call(Map config) {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/lib/jenkins/.steam:/opt/steamcmd:rw -v /var/lib/jenkins/jobs:/var/lib/jenkins/jobs:ro --network host'
+                args '-v /var/lib/jenkins/.steam:/home/jenkins/Steam:rw -v /var/lib/jenkins/jobs:/var/lib/jenkins/jobs:ro --network host'
             }
         }
 
