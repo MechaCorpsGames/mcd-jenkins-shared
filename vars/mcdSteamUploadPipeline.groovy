@@ -76,10 +76,18 @@ def call(Map config) {
                             error "No manifest.json found in build #${buildNum}"
                         }
 
-                        def manifest = readJSON file: manifestPath
-                        env.CLIENT_VERSION = manifest.clientVersion
-                        env.SOURCE_BRANCH = manifest.branch
-                        env.SOURCE_COMMIT = manifest.commit
+                        env.CLIENT_VERSION = sh(
+                            script: "grep -oP '\"clientVersion\"\\s*:\\s*\"\\K[^\"]+' ${manifestPath}",
+                            returnStdout: true
+                        ).trim()
+                        env.SOURCE_BRANCH = sh(
+                            script: "grep -oP '\"branch\"\\s*:\\s*\"\\K[^\"]+' ${manifestPath}",
+                            returnStdout: true
+                        ).trim()
+                        env.SOURCE_COMMIT = sh(
+                            script: "grep -oP '\"commit\"\\s*:\\s*\"\\K[^\"]+' ${manifestPath}",
+                            returnStdout: true
+                        ).trim()
 
                         env.ARTIFACT_DIR = sh(
                             script: "dirname ${manifestPath}",
