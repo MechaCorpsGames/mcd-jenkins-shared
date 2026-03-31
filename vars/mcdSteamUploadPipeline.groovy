@@ -1,5 +1,5 @@
 // MechaCorps Steam Upload Pipeline - Shared Library
-// Standalone job: copies artifacts from a client build and uploads to Steam via SteamPipe.
+// Standalone job: downloads artifacts from a client build and uploads to Steam via SteamPipe.
 // Triggered manually — pick the source job and build number.
 
 def call(Map config) {
@@ -22,7 +22,7 @@ def call(Map config) {
             choice(
                 name: 'SOURCE_JOB',
                 choices: ['MCDClient-Main', 'MCDClient-Release'],
-                description: 'Which client build job to copy artifacts from'
+                description: 'Which client build job to download artifacts from'
             )
             string(
                 name: 'SOURCE_BUILD',
@@ -43,28 +43,31 @@ def call(Map config) {
         }
 
         stages {
-            stage('Copy Client Artifacts') {
+            stage('Download Client Artifacts') {
                 steps {
                     script {
-                        def selector = params.SOURCE_BUILD == 'lastSuccessfulBuild'
-                            ? lastSuccessful()
-                            : specific(params.SOURCE_BUILD)
+                        def artifactUrl = "${env.JENKINS_URL_BASE}/job/${params.SOURCE_JOB}/${params.SOURCE_BUILD}/artifact/*zip*/archive.zip"
 
-                        copyArtifacts(
-                            projectName: params.SOURCE_JOB,
-                            selector: selector,
-                            filter: 'artifacts/**/*.zip,artifacts/**/BUILD_INFO.txt,artifacts/**/manifest.json',
-                            flatten: false
-                        )
+                        echo "Downloading artifacts from ${params.SOURCE_JOB} #${params.SOURCE_BUILD}..."
+
+                        // Download using Jenkins internal access (localhost, no auth needed)
+                        sh """
+                            curl -sSf -o archive.zip "http://localhost:8080/job/${params.SOURCE_JOB}/${params.SOURCE_BUILD}/artifact/*zip*/archive.zip"
+                            unzip -o archive.zip
+                            rm archive.zip
+
+                            echo "Downloaded artifacts:"
+                            find archive/artifacts -type f | sort
+                        """
 
                         // Read version from manifest
                         def manifestPath = sh(
-                            script: "find artifacts -name manifest.json | head -1",
+                            script: "find archive/artifacts -name manifest.json | head -1",
                             returnStdout: true
                         ).trim()
 
                         if (!manifestPath) {
-                            error "No manifest.json found in copied artifacts"
+                            error "No manifest.json found in downloaded artifacts"
                         }
 
                         def manifest = readJSON file: manifestPath
