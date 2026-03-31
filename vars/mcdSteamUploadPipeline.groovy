@@ -1,5 +1,5 @@
 // MechaCorps Steam Upload Pipeline - Shared Library
-// Standalone job: downloads artifacts from a client build and uploads to Steam via SteamPipe.
+// Standalone job: reads artifacts from a client build and uploads to Steam via SteamPipe.
 // Triggered manually — pick the source job and build number.
 
 def call(Map config) {
@@ -10,7 +10,7 @@ def call(Map config) {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/lib/jenkins/.steam:/home/jenkins/.steam:rw --network host'
+                args '-v /var/lib/jenkins/.steam:/home/jenkins/.steam:rw -v /var/lib/jenkins/jobs:/var/lib/jenkins/jobs:ro --network host'
             }
         }
 
@@ -22,12 +22,12 @@ def call(Map config) {
             choice(
                 name: 'SOURCE_JOB',
                 choices: ['MCDClient-Main', 'MCDClient-Release'],
-                description: 'Which client build job to download artifacts from'
+                description: 'Which client build job to get artifacts from'
             )
             string(
                 name: 'SOURCE_BUILD',
-                defaultValue: 'lastSuccessfulBuild',
-                description: 'Build number to upload (or "lastSuccessfulBuild")'
+                defaultValue: '',
+                description: 'Build number (leave empty for latest successful build with artifacts)'
             )
             choice(
                 name: 'STEAM_BRANCH',
@@ -43,31 +43,36 @@ def call(Map config) {
         }
 
         stages {
-            stage('Download Client Artifacts') {
+            stage('Locate Client Artifacts') {
                 steps {
                     script {
-                        def artifactUrl = "${env.JENKINS_URL_BASE}/job/${params.SOURCE_JOB}/${params.SOURCE_BUILD}/artifact/*zip*/archive.zip"
+                        def jobDir = "/var/lib/jenkins/jobs/${params.SOURCE_JOB}/builds"
+                        def buildNum = params.SOURCE_BUILD?.trim()
 
-                        echo "Downloading artifacts from ${params.SOURCE_JOB} #${params.SOURCE_BUILD}..."
+                        if (!buildNum) {
+                            // Find latest build with archived artifacts
+                            buildNum = sh(
+                                script: "ls -1d ${jobDir}/*/archive 2>/dev/null | sort -t/ -k8 -n | tail -1 | grep -oP '\\d+(?=/archive)'",
+                                returnStdout: true
+                            ).trim()
 
-                        // Download using Jenkins internal access (localhost, no auth needed)
-                        sh """
-                            curl -sSf -o archive.zip "http://localhost:8080/job/${params.SOURCE_JOB}/${params.SOURCE_BUILD}/artifact/*zip*/archive.zip"
-                            unzip -o archive.zip
-                            rm archive.zip
+                            if (!buildNum) {
+                                error "No builds with artifacts found for ${params.SOURCE_JOB}"
+                            }
+                            echo "Using latest build with artifacts: #${buildNum}"
+                        }
 
-                            echo "Downloaded artifacts:"
-                            find archive/artifacts -type f | sort
-                        """
+                        env.SOURCE_BUILD_NUM = buildNum
+                        def archiveDir = "${jobDir}/${buildNum}/archive"
 
-                        // Read version from manifest
+                        // Find manifest
                         def manifestPath = sh(
-                            script: "find archive/artifacts -name manifest.json | head -1",
+                            script: "find ${archiveDir} -name manifest.json | head -1",
                             returnStdout: true
                         ).trim()
 
                         if (!manifestPath) {
-                            error "No manifest.json found in downloaded artifacts"
+                            error "No manifest.json found in build #${buildNum}"
                         }
 
                         def manifest = readJSON file: manifestPath
@@ -75,20 +80,19 @@ def call(Map config) {
                         env.SOURCE_BRANCH = manifest.branch
                         env.SOURCE_COMMIT = manifest.commit
 
-                        // Find the artifact directory
-                        env.ARTIFACT_BASE = sh(
+                        env.ARTIFACT_DIR = sh(
                             script: "dirname ${manifestPath}",
                             returnStdout: true
                         ).trim()
 
                         currentBuild.displayName = "#${BUILD_NUMBER} v${env.CLIENT_VERSION} → ${params.STEAM_BRANCH}"
-                        currentBuild.description = "From ${params.SOURCE_JOB} #${params.SOURCE_BUILD} (${env.SOURCE_BRANCH})"
+                        currentBuild.description = "From ${params.SOURCE_JOB} #${buildNum} (${env.SOURCE_BRANCH})"
 
                         echo "Client version: ${env.CLIENT_VERSION}"
-                        echo "Source: ${params.SOURCE_JOB} #${params.SOURCE_BUILD}"
+                        echo "Source: ${params.SOURCE_JOB} #${buildNum}"
                         echo "Steam branch: ${params.STEAM_BRANCH}"
 
-                        sh "ls -lh ${env.ARTIFACT_BASE}/"
+                        sh "ls -lh ${env.ARTIFACT_DIR}/"
                     }
                 }
             }
@@ -101,9 +105,8 @@ def call(Map config) {
                         rm -rf steam_content steam_output steam_build
                         mkdir -p steam_content/windows steam_content/linux steam_build
 
-                        # Find and unzip platform artifacts
-                        WIN_ZIP=\$(find ${ARTIFACT_BASE} -name '*Windows*.zip' | head -1)
-                        LIN_ZIP=\$(find ${ARTIFACT_BASE} -name '*Linux*.zip' | head -1)
+                        WIN_ZIP=\$(find ${ARTIFACT_DIR} -name '*Windows*.zip' | head -1)
+                        LIN_ZIP=\$(find ${ARTIFACT_DIR} -name '*Linux*.zip' | head -1)
 
                         if [ -z "\$WIN_ZIP" ]; then
                             echo "ERROR: No Windows zip found"
@@ -117,7 +120,6 @@ def call(Map config) {
                         unzip -o "\$WIN_ZIP" -d steam_content/windows/
                         unzip -o "\$LIN_ZIP" -d steam_content/linux/
 
-                        # Prepare VDF files with substitutions
                         cp steam/app_build.vdf steam_build/
                         cp steam/depot_windows.vdf steam_build/
                         cp steam/depot_linux.vdf steam_build/
