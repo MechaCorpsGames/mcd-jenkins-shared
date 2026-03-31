@@ -49,7 +49,8 @@ def call(Map config) {
                         def jobDir = "/var/lib/jenkins/jobs/${params.SOURCE_JOB}/builds"
                         def buildNum = params.SOURCE_BUILD?.trim()
 
-                        if (!buildNum) {
+                        // Resolve non-numeric values (empty, "lastSuccessfulBuild", etc.)
+                        if (!buildNum || !buildNum.isNumber()) {
                             // Find latest build with archived artifacts
                             buildNum = sh(
                                 script: "ls -1d ${jobDir}/*/archive 2>/dev/null | sort -t/ -k8 -n | tail -1 | grep -oP '\\d+(?=/archive)'",
