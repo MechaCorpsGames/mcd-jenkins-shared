@@ -135,7 +135,6 @@ def call(Map config) {
 
                         sed -i "s/__DESCRIPTION__/v${CLIENT_VERSION} from ${SOURCE_BRANCH} (${SOURCE_COMMIT})/g" \
                             steam_build/app_build.vdf
-                        sed -i "s/__BRANCH__/${params.STEAM_BRANCH}/g" steam_build/app_build.vdf
 
                         echo "=== Steam build VDF ==="
                         cat steam_build/app_build.vdf
