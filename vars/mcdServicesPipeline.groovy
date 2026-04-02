@@ -135,7 +135,8 @@ def call(Map config) {
                                 echo "✓ MCPServer binary built"
 
                                 cd /var/opt/mechacorpsgames/Src
-                                docker-compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting up -d --build --force-recreate crash-reporting mcp-server
+                                docker-compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting build --no-cache crash-reporting mcp-server
+                                docker-compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting up -d --force-recreate crash-reporting mcp-server
                                 sleep 5
 
                                 PASS=true

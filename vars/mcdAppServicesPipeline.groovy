@@ -164,7 +164,8 @@ def call(Map config) {
 
                             sh """
                                 cd ${srcDir}
-                                docker-compose -p ${authProject} -f docker-compose.auth.yml ${authEnvFlag} up -d --build --force-recreate auth
+                                docker-compose -p ${authProject} -f docker-compose.auth.yml ${authEnvFlag} build --no-cache auth
+                                docker-compose -p ${authProject} -f docker-compose.auth.yml ${authEnvFlag} up -d --force-recreate auth
                                 sleep 5
 
                                 OK=false
@@ -203,7 +204,8 @@ def call(Map config) {
                                     docker exec ${postgresContainer} psql -U mechacorps -d postgres -c "CREATE DATABASE mechacorps_account;" || true
 
                                 cd ${srcDir}
-                                docker-compose -p ${accountProject} -f docker-compose.account.yml ${accountEnvFlag} up -d --build --force-recreate account-service
+                                docker-compose -p ${accountProject} -f docker-compose.account.yml ${accountEnvFlag} build --no-cache account-service
+                                docker-compose -p ${accountProject} -f docker-compose.account.yml ${accountEnvFlag} up -d --force-recreate account-service
                                 sleep 5
 
                                 OK=false
@@ -238,7 +240,8 @@ def call(Map config) {
 
                             sh """
                                 cd ${srcDir}
-                                docker-compose -p ${auctionProject} -f docker-compose.auction.yml ${auctionEnvFlag} up -d --build --force-recreate auction-house
+                                docker-compose -p ${auctionProject} -f docker-compose.auction.yml ${auctionEnvFlag} build --no-cache auction-house
+                                docker-compose -p ${auctionProject} -f docker-compose.auction.yml ${auctionEnvFlag} up -d --force-recreate auction-house
                                 sleep 5
 
                                 OK=false
