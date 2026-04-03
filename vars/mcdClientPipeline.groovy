@@ -50,7 +50,10 @@ def call(Map config) {
                     [key: 'commit_message', value: '$.head_commit.message'],
                     [key: 'commit_author', value: '$.head_commit.author.name'],
                     [key: 'pusher_name', value: '$.pusher.name'],
-                    [key: 'before_sha', value: '$.before']
+                    [key: 'before_sha', value: '$.before'],
+                    [key: 'files_added', value: '$.commits[*].added[*]'],
+                    [key: 'files_modified', value: '$.commits[*].modified[*]'],
+                    [key: 'files_removed', value: '$.commits[*].removed[*]']
                 ],
                 causeString: "Triggered by push to ${config.branch}",
                 token: config.webhookToken,
@@ -58,8 +61,11 @@ def call(Map config) {
                 printContributedVariables: true,
                 printPostContent: false,
                 silentResponse: false,
-                regexpFilterText: '$ref',
-                regexpFilterExpression: "refs/heads/${config.branch}"
+                // Filter: only trigger when the push is to our branch AND touches client-relevant paths
+                // Paths: MCDCoreExt (GDExtension), Include/External/Data (shared), Validation (unknown→both),
+                //        all GDScript/asset dirs, project.godot, Jenkinsfile.client (pipeline itself)
+                regexpFilterText: '$ref $files_added $files_modified $files_removed',
+                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(MCDCoreExt|Include|External|Validation)/|Data/|GameModes/|Menus/|DeckBuilder/|CardLibrary|Resources/|Onboard/|Game/|Sandbox/|tests/|scripts/|addons/|Assets/|Export/|Generated/|project\\.godot|export_presets\\.cfg|build-godot\\.sh|\\.Jenkins/Jenkinsfile\\.client)"
             )
         }
 

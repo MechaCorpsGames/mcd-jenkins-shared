@@ -46,7 +46,10 @@ def call(Map config) {
                     [key: 'commit_author', value: '$.head_commit.author.name'],
                     [key: 'pusher_name', value: '$.pusher.name'],
                     [key: 'commits_count', value: '$.commits.length()'],
-                    [key: 'before_sha', value: '$.before']
+                    [key: 'before_sha', value: '$.before'],
+                    [key: 'files_added', value: '$.commits[*].added[*]'],
+                    [key: 'files_modified', value: '$.commits[*].modified[*]'],
+                    [key: 'files_removed', value: '$.commits[*].removed[*]']
                 ],
                 causeString: "Triggered by push to ${config.branch}",
                 token: config.webhookToken,
@@ -54,8 +57,12 @@ def call(Map config) {
                 printContributedVariables: true,
                 printPostContent: false,
                 silentResponse: false,
-                regexpFilterText: '$ref',
-                regexpFilterExpression: "refs/heads/${config.branch}"
+                // Filter: only trigger when the push is to our branch AND touches server-relevant paths
+                // Paths: GameServer, Proxy, TestClient (server-only), Include/External/Data (shared),
+                //        Shared (Go services), Validation (unknown→both), deploy/go.work/docker-compose.proxy,
+                //        flake.nix/lock, Jenkinsfile.server (pipeline itself)
+                regexpFilterText: '$ref $files_added $files_modified $files_removed',
+                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(GameServer|Proxy|TestClient|Include|External|Shared|Validation)/|Data/|Src/(deploy|go\\.work|docker-compose\\.proxy)|\\.Jenkins/Jenkinsfile\\.server|flake\\.|scripts/dev-pg)"
             )
         }
 
