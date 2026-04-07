@@ -123,17 +123,14 @@ def call(Map config) {
                         if (!baseRef || baseRef.startsWith('0000000')) {
                             echo "No valid before SHA — building everything"
                             env.SERVER_CHANGED = 'true'
-                            env.ECONOMY_TESTS_NEEDED = 'true'
                         } else {
                             // Ensure the before SHA is available locally
                             sh "git fetch origin ${baseRef} 2>/dev/null || true"
                             def changes = mcdChangeDetection.detect(baseRef)
                             env.SERVER_CHANGED = changes.serverChanged.toString()
-                            // Economy tests cover Auth, AccountService, AuctionHouse
-                            env.ECONOMY_TESTS_NEEDED = (changes.serverChanged || changes.authChanged || changes.accountServiceChanged || changes.auctionHouseChanged).toString()
                         }
 
-                        if (env.SERVER_CHANGED != 'true' && env.ECONOMY_TESTS_NEEDED != 'true') {
+                        if (env.SERVER_CHANGED != 'true') {
                             currentBuild.description += "\n⏭️ No server changes — skipped"
                             currentBuild.result = 'NOT_BUILT'
                         }
@@ -179,22 +176,6 @@ def call(Map config) {
                         cd Src/GameServer
                         ./build.sh --test --release
                     """
-                }
-            }
-
-            stage('Economy Service Tests') {
-                when { expression { env.ECONOMY_TESTS_NEEDED == 'true' } }
-                steps {
-                    sh '''
-                        unset GOROOT
-                        nix develop . --command bash -c '
-                            dev-pg.sh init && dev-pg.sh start || exit 1
-                            trap "dev-pg.sh stop" EXIT
-                            cd Src/Auth && go test ./... &&
-                            cd ../AccountService && go test ./... &&
-                            cd ../AuctionHouse && go test ./...
-                        '
-                    '''
                 }
             }
 

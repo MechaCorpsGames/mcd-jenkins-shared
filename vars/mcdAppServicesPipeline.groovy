@@ -150,6 +150,28 @@ def call(Map config) {
                 }
             }
 
+            stage('Service Tests') {
+                when {
+                    expression {
+                        env.AUTH_CHANGED == 'true' ||
+                        env.ACCOUNT_SERVICE_CHANGED == 'true' ||
+                        env.AUCTION_HOUSE_CHANGED == 'true'
+                    }
+                }
+                steps {
+                    sh '''
+                        unset GOROOT
+                        nix develop . --command bash -c '
+                            dev-pg.sh init && dev-pg.sh start || exit 1
+                            trap "dev-pg.sh stop" EXIT
+                            cd Src/Auth && go test ./... &&
+                            cd ../AccountService && go test ./... &&
+                            cd ../AuctionHouse && go test ./...
+                        '
+                    '''
+                }
+            }
+
             // ================================================================
             // Each service stage is catchError-wrapped: one failure marks
             // the build UNSTABLE but does NOT block other services.
