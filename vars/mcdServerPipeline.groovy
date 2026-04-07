@@ -415,6 +415,9 @@ CRASH_REPORT_URL=${config.crashReportUrl ?: "http://localhost:${basePort + 90}"}
 AUTH_URL=${config.authUrl ?: 'https://auth.mechacorpsgames.com'}
 AUTH_INTERNAL_KEY=${config.authInternalKey ?: ''}
 CRASH_REPORTING_API_KEY=${config.crashReportKey ?: ''}
+BOT_WS_PORT=${config.botWsPort ?: basePort + 71}
+BOT_ACCOUNT=${config.botAccount ?: ''}
+BOT_PASSWORD=${config.botPassword ?: ''}
 ENVEOF
                         """
                         def containerName = "${composeProject}_proxy_1"
