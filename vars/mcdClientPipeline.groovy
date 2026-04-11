@@ -544,17 +544,25 @@ EOF
                         if (sentryCliExists) {
                             sh """
                                 export SENTRY_AUTH_TOKEN=\$(grep SENTRY_TOKEN /var/opt/mechacorpsgames/Src/.env.sentry | cut -d= -f2)
-                                echo "Uploading debug symbols for all platforms..."
+                                echo "Uploading client debug symbols for all platforms..."
                                 sentry-cli --url https://us.sentry.io \
                                     upload-dif --org mechacorps-llc --project mcd-client \
+                                    --include-sources \
                                     bin/lib/ \
-                                    Src/MCDCoreExt/build/ \
+                                    Src/MCDCoreExt/build/Release/ \
                                     Src/MCDCoreExt/build-windows/ \
                                     Src/MCDCoreExt/build-android/ \
                                     || echo "⚠️ Symbol upload failed (non-fatal)"
+
+                                echo "Verifying uploaded symbols..."
+                                sentry-cli --url https://us.sentry.io \
+                                    debug-files check \
+                                    --org mechacorps-llc --project mcd-client \
+                                    bin/lib/Linux-x86_64/libMCDCoreExt.so \
+                                    || echo "⚠️ Symbol verification failed (non-fatal)"
                             """
                         } else {
-                            echo "sentry-cli not installed, skipping symbol upload"
+                            echo "⚠️ sentry-cli not installed — debug symbols NOT uploaded. Install sentry-cli in the build agent to enable crash symbolication."
                         }
                     }
                 }
