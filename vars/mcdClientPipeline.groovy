@@ -31,13 +31,11 @@ def call(Map config) {
             GODOT_ANDROID_KEYSTORE_DEBUG_PATH = "/var/lib/jenkins/.android/debug.keystore"
             GODOT_ANDROID_KEYSTORE_DEBUG_USER = "androiddebugkey"
             GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD = "android"
-            // Release keystore comes from Jenkins credentials so the upload key
-            // stays out of the repo and container image. These three IDs must
-            // exist in Jenkins Credentials (global scope) — see
-            // docs/play-store/README.md in the client repo.
-            GODOT_ANDROID_KEYSTORE_RELEASE_PATH = credentials('android-upload-keystore')
-            GODOT_ANDROID_KEYSTORE_RELEASE_USER = credentials('android-upload-keystore-alias')
-            GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD = credentials('android-upload-keystore-password')
+            // Release keystore is bound lazily via withCredentials around the
+            // Android release build + export stages (see below). Doing it here
+            // with credentials() in the environment block would abort every
+            // client build before entering the node when the credentials are
+            // missing — even Linux/Windows-only work would break.
             BRANCH_NAME = "${config.branch}"
             BRANCH_SAFE = "${config.branch.replaceAll('/', '-')}"
             DEPLOY_ENV = "${config.environment}"
@@ -353,7 +351,28 @@ def call(Map config) {
             stage('Export Game Executables') {
                 when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
-                    script { env.BUILD_PHASE = 'Export Game Executables' }
+                    script {
+                        env.BUILD_PHASE = 'Export Game Executables'
+
+                        // Detect whether the Play Store upload keystore is available.
+                        // If not, skip the Android AAB export entirely — we still
+                        // ship Linux + Windows builds, and the pipeline stays green
+                        // so non-Android work isn't held hostage to Play credentials.
+                        env.HAS_UPLOAD_KEYSTORE = 'false'
+                        try {
+                            withCredentials([
+                                file(credentialsId: 'android-upload-keystore', variable: '_KS_PROBE')
+                            ]) {
+                                env.HAS_UPLOAD_KEYSTORE = 'true'
+                            }
+                        } catch (err) {
+                            echo "⚠️  Upload keystore credentials not configured — skipping Android AAB export."
+                            echo "    To enable: create Jenkins credentials android-upload-keystore (Secret file),"
+                            echo "    android-upload-keystore-password (Secret text), android-upload-keystore-alias (Secret text)."
+                            echo "    See docs/play-store/README.md in the client repo."
+                        }
+                    }
+
                     sh """
                         mkdir -p exports
 
@@ -377,18 +396,34 @@ def call(Map config) {
                             echo "Linux export failed, check export_presets.cfg"
                             exit 1
                         fi
+                    """
 
-                        echo "Exporting Android AAB (Play Store format)..."
-                        godot --headless --export-release "Android" exports/MechaCorpsDraft.aab 2>&1 || true
-                        if [ ! -f exports/MechaCorpsDraft.aab ]; then
-                            echo "Android export failed. Checklist:"
-                            echo "  - export_presets.cfg: gradle_build/use_gradle_build=true, export_format=1"
-                            echo "  - Android SDK at \$ANDROID_SDK_ROOT, NDK at \$ANDROID_NDK_HOME"
-                            echo "  - Godot Android build template installed in export_templates dir"
-                            echo "  - Upload keystore credential android-upload-keystore accessible"
-                            exit 1
-                        fi
+                    script {
+                        if (env.HAS_UPLOAD_KEYSTORE == 'true') {
+                            withCredentials([
+                                file(credentialsId: 'android-upload-keystore', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_PATH'),
+                                string(credentialsId: 'android-upload-keystore-alias', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_USER'),
+                                string(credentialsId: 'android-upload-keystore-password', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD')
+                            ]) {
+                                sh """
+                                    echo "Exporting Android AAB (Play Store format)..."
+                                    godot --headless --export-release "Android" exports/MechaCorpsDraft.aab 2>&1 || true
+                                    if [ ! -f exports/MechaCorpsDraft.aab ]; then
+                                        echo "Android export failed. Checklist:"
+                                        echo "  - export_presets.cfg: gradle_build/use_gradle_build=true, export_format=1"
+                                        echo "  - Android SDK at \$ANDROID_SDK_ROOT, NDK at \$ANDROID_NDK_HOME"
+                                        echo "  - Godot Android build template installed in export_templates dir"
+                                        echo "  - Upload keystore credential android-upload-keystore accessible"
+                                        exit 1
+                                    fi
+                                """
+                            }
+                        } else {
+                            echo "Skipping Android AAB export (no upload keystore)."
+                        }
+                    }
 
+                    sh """
                         echo ""
                         echo "Exported executables:"
                         ls -lh exports/
@@ -397,8 +432,13 @@ def call(Map config) {
                     script {
                         env.WIN_EXE_SIZE = sh(script: "du -h exports/MechaCorpsDraft.exe | cut -f1", returnStdout: true).trim()
                         env.LINUX_EXE_SIZE = sh(script: "du -h exports/MechaCorpsDraft.x86_64 | cut -f1", returnStdout: true).trim()
-                        env.ANDROID_AAB_SIZE = sh(script: "du -h exports/MechaCorpsDraft.aab | cut -f1", returnStdout: true).trim()
-                        echo "Executable sizes - Windows: ${env.WIN_EXE_SIZE}, Linux: ${env.LINUX_EXE_SIZE}, Android AAB: ${env.ANDROID_AAB_SIZE}"
+                        if (fileExists('exports/MechaCorpsDraft.aab')) {
+                            env.ANDROID_AAB_SIZE = sh(script: "du -h exports/MechaCorpsDraft.aab | cut -f1", returnStdout: true).trim()
+                            echo "Executable sizes - Windows: ${env.WIN_EXE_SIZE}, Linux: ${env.LINUX_EXE_SIZE}, Android AAB: ${env.ANDROID_AAB_SIZE}"
+                        } else {
+                            env.ANDROID_AAB_SIZE = 'skipped'
+                            echo "Executable sizes - Windows: ${env.WIN_EXE_SIZE}, Linux: ${env.LINUX_EXE_SIZE}, Android AAB: skipped"
+                        }
                     }
                 }
             }
@@ -450,7 +490,11 @@ GDEXT
 
                         cd \${ARTIFACT_BASE}/game/Windows && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Windows-v${CLIENT_VERSION}.zip . && cd -
                         cd \${ARTIFACT_BASE}/game/Linux && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Linux-v${CLIENT_VERSION}.zip . && cd -
-                        cp exports/MechaCorpsDraft.aab \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab
+                        if [ -f exports/MechaCorpsDraft.aab ]; then
+                            cp exports/MechaCorpsDraft.aab \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab
+                        else
+                            echo "⚠️  Android AAB was skipped — not staging Android artifact."
+                        fi
 
                         rm -rf \${ARTIFACT_BASE}/game
 
@@ -519,6 +563,14 @@ EOF
 
                         env.PROTOCOL_VERSION = protocolVersion
 
+                        def androidEntry = (env.ANDROID_AAB_SIZE && env.ANDROID_AAB_SIZE != 'skipped') ? """,
+        "android": {
+            "download": "MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab",
+            "package": "com.mechacorpsgames.mechacorpsdraft",
+            "format": "aab",
+            "versionCode": ${BUILD_NUMBER}
+        }""" : ""
+
                         sh """
                             ARTIFACT_BASE="artifacts/${BRANCH_SAFE}/v${CLIENT_VERSION}"
                             cat > \${ARTIFACT_BASE}/manifest.json << EOF
@@ -539,13 +591,7 @@ EOF
         "linux": {
             "download": "MechaCorpsDraft-${BRANCH_SAFE}-Linux-v${CLIENT_VERSION}.zip",
             "executable": "MechaCorpsDraft.x86_64"
-        },
-        "android": {
-            "download": "MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab",
-            "package": "com.mechacorpsgames.mechacorpsdraft",
-            "format": "aab",
-            "versionCode": ${BUILD_NUMBER}
-        }
+        }${androidEntry}
     }
 }
 EOF
