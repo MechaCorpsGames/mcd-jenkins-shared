@@ -31,9 +31,13 @@ def call(Map config) {
             GODOT_ANDROID_KEYSTORE_DEBUG_PATH = "/var/lib/jenkins/.android/debug.keystore"
             GODOT_ANDROID_KEYSTORE_DEBUG_USER = "androiddebugkey"
             GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD = "android"
-            GODOT_ANDROID_KEYSTORE_RELEASE_PATH = "/var/lib/jenkins/.android/debug.keystore"
-            GODOT_ANDROID_KEYSTORE_RELEASE_USER = "androiddebugkey"
-            GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD = "android"
+            // Release keystore comes from Jenkins credentials so the upload key
+            // stays out of the repo and container image. These three IDs must
+            // exist in Jenkins Credentials (global scope) — see
+            // docs/play-store/README.md in the client repo.
+            GODOT_ANDROID_KEYSTORE_RELEASE_PATH = credentials('android-upload-keystore')
+            GODOT_ANDROID_KEYSTORE_RELEASE_USER = credentials('android-upload-keystore-alias')
+            GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD = credentials('android-upload-keystore-password')
             BRANCH_NAME = "${config.branch}"
             BRANCH_SAFE = "${config.branch.replaceAll('/', '-')}"
             DEPLOY_ENV = "${config.environment}"
@@ -282,6 +286,16 @@ def call(Map config) {
                                     """
                                 }
                             }
+
+                            stage('MCDCoreExt Android armeabi-v7a Release') {
+                                steps {
+                                    script { env.BUILD_PHASE = 'MCDCoreExt Android armeabi-v7a Release' }
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --release --android armeabi-v7a --server-url ${SERVER_URL} --build-number ${BUILD_NUMBER} --branch ${BRANCH_NAME}
+                                    """
+                                }
+                            }
                         }
                     }
                 }
@@ -318,6 +332,8 @@ def call(Map config) {
                             echo "✓ Android arm64-v8a debug build"
                             test -f bin/lib/Android-arm64-v8a/libMCDCoreExt.so
                             echo "✓ Android arm64-v8a release build"
+                            test -f bin/lib/Android-armeabi-v7a/libMCDCoreExt.so
+                            echo "✓ Android armeabi-v7a release build"
 
                             echo ""
                             echo "All builds verified successfully!"
@@ -341,6 +357,13 @@ def call(Map config) {
                     sh """
                         mkdir -p exports
 
+                        # Inject monotonic version code + human-readable version name
+                        # into the Android preset so Play Store won't reject duplicate uploads.
+                        # Play requires versionCode to be a strictly-increasing integer.
+                        sed -i "s|^version/code=.*|version/code=${BUILD_NUMBER}|" export_presets.cfg
+                        sed -i "s|^version/name=.*|version/name=\\"${CLIENT_VERSION}\\"|" export_presets.cfg
+                        echo "Android versionCode=${BUILD_NUMBER}, versionName=${CLIENT_VERSION}"
+
                         echo "Exporting Windows build..."
                         godot --headless --export-release "Windows Desktop" exports/MechaCorpsDraft.exe 2>&1 || true
                         if [ ! -f exports/MechaCorpsDraft.exe ]; then
@@ -355,10 +378,14 @@ def call(Map config) {
                             exit 1
                         fi
 
-                        echo "Exporting Android build..."
-                        godot --headless --export-release "Android" exports/MechaCorpsDraft.apk 2>&1 || true
-                        if [ ! -f exports/MechaCorpsDraft.apk ]; then
-                            echo "Android export failed, check export_presets.cfg and Android SDK setup"
+                        echo "Exporting Android AAB (Play Store format)..."
+                        godot --headless --export-release "Android" exports/MechaCorpsDraft.aab 2>&1 || true
+                        if [ ! -f exports/MechaCorpsDraft.aab ]; then
+                            echo "Android export failed. Checklist:"
+                            echo "  - export_presets.cfg: gradle_build/use_gradle_build=true, export_format=1"
+                            echo "  - Android SDK at \$ANDROID_SDK_ROOT, NDK at \$ANDROID_NDK_HOME"
+                            echo "  - Godot Android build template installed in export_templates dir"
+                            echo "  - Upload keystore credential android-upload-keystore accessible"
                             exit 1
                         fi
 
@@ -370,8 +397,8 @@ def call(Map config) {
                     script {
                         env.WIN_EXE_SIZE = sh(script: "du -h exports/MechaCorpsDraft.exe | cut -f1", returnStdout: true).trim()
                         env.LINUX_EXE_SIZE = sh(script: "du -h exports/MechaCorpsDraft.x86_64 | cut -f1", returnStdout: true).trim()
-                        env.ANDROID_APK_SIZE = sh(script: "du -h exports/MechaCorpsDraft.apk | cut -f1", returnStdout: true).trim()
-                        echo "Executable sizes - Windows: ${env.WIN_EXE_SIZE}, Linux: ${env.LINUX_EXE_SIZE}, Android: ${env.ANDROID_APK_SIZE}"
+                        env.ANDROID_AAB_SIZE = sh(script: "du -h exports/MechaCorpsDraft.aab | cut -f1", returnStdout: true).trim()
+                        echo "Executable sizes - Windows: ${env.WIN_EXE_SIZE}, Linux: ${env.LINUX_EXE_SIZE}, Android AAB: ${env.ANDROID_AAB_SIZE}"
                     }
                 }
             }
@@ -423,7 +450,7 @@ GDEXT
 
                         cd \${ARTIFACT_BASE}/game/Windows && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Windows-v${CLIENT_VERSION}.zip . && cd -
                         cd \${ARTIFACT_BASE}/game/Linux && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Linux-v${CLIENT_VERSION}.zip . && cd -
-                        cp exports/MechaCorpsDraft.apk \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.apk
+                        cp exports/MechaCorpsDraft.aab \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab
 
                         rm -rf \${ARTIFACT_BASE}/game
 
@@ -457,7 +484,7 @@ Author: \$COMMIT_AUTHOR_VAL
 Build Environment: ${BUILD_ENV}
 GCC Version: ${GCC_VERSION}
 CMake Version: ${CMAKE_VERSION}
-Platforms: Linux-x86_64, Windows-x86_64, Android-arm64-v8a
+Platforms: Linux-x86_64, Windows-x86_64, Android-arm64-v8a, Android-armeabi-v7a
 
 Library Sizes:
   Linux Release: ${LINUX_RELEASE_SIZE}
@@ -469,7 +496,7 @@ Library Sizes:
 Game Executables:
   Windows: ${WIN_EXE_SIZE}
   Linux: ${LINUX_EXE_SIZE}
-  Android APK: ${ANDROID_APK_SIZE}
+  Android AAB: ${ANDROID_AAB_SIZE}
 EOF
 
                         echo ""
@@ -514,8 +541,10 @@ EOF
             "executable": "MechaCorpsDraft.x86_64"
         },
         "android": {
-            "download": "MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.apk",
-            "package": "com.mechacorpsgames.mechacorpsdraft"
+            "download": "MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab",
+            "package": "com.mechacorpsgames.mechacorpsdraft",
+            "format": "aab",
+            "versionCode": ${BUILD_NUMBER}
         }
     }
 }
