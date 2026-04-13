@@ -192,7 +192,7 @@ def call(Map config) {
 
                                 OK=false
                                 for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${authPort}/health)
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${authPort}/health || true)
                                     if [ "\$RESULT" = "200" ]; then
                                         echo "✓ Auth service health check passed (${config.environment} :${authPort})"
                                         OK=true
@@ -232,7 +232,7 @@ def call(Map config) {
 
                                 OK=false
                                 for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${accountPort}/health)
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${accountPort}/health || true)
                                     if [ "\$RESULT" = "200" ]; then
                                         echo "✓ AccountService health check passed (${config.environment} :${accountPort})"
                                         OK=true
@@ -268,7 +268,7 @@ def call(Map config) {
 
                                 OK=false
                                 for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${auctionPort}/health)
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${auctionPort}/health || true)
                                     if [ "\$RESULT" = "200" ]; then
                                         echo "✓ AuctionHouse health check passed (${config.environment} :${auctionPort})"
                                         OK=true

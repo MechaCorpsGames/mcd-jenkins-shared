@@ -145,7 +145,7 @@ def call(Map config) {
                                     PORT="\${SVC##*:}"
                                     OK=false
                                     for i in \$(seq 1 10); do
-                                        RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:\$PORT/health)
+                                        RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:\$PORT/health || true)
                                         if [ "\$RESULT" = "200" ]; then
                                             echo "✓ \$NAME health check passed"
                                             OK=true
@@ -208,7 +208,7 @@ def call(Map config) {
 
                                 OK=false
                                 for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9090/-/ready)
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9090/-/ready || true)
                                     if [ "\$RESULT" = "200" ]; then
                                         echo "✓ Prometheus is ready"
                                         OK=true
