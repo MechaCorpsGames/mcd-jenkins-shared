@@ -186,7 +186,7 @@ def call(Map config) {
                 }
                 steps {
                     sh """
-                        cd ${srcDir}/..
+                        cd ${srcDir}
                         git fetch origin ${config.branch}
                         git checkout ${config.branch}
                         git reset --hard origin/${config.branch}
