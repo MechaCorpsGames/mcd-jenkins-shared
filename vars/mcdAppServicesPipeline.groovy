@@ -12,7 +12,13 @@ def call(Map config) {
 
     // All environments use per-env .env files and isolated compose projects.
     // Port offsets from environments.toml: Auth=base+81, Account=base+82, Auction=base+83
-    def srcDir = '/var/opt/mechacorpsgames/Src'
+    //
+    // Each environment owns its own src tree so concurrent pipelines and
+    // ad-hoc work in /var/opt/mechacorpsgames cannot poison each other's
+    // docker builds. The Sync Src Tree stage resets srcRoot to origin/<branch>
+    // before any compose build runs, under a per-env lock.
+    def srcRoot = "/var/opt/mechacorpsgames-${config.environment}"
+    def srcDir = "${srcRoot}/Src"
 
     def basePorts = [
         'release':         42000,
@@ -49,12 +55,16 @@ def call(Map config) {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995 --group-add 1000'
+                args "-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /opt/mechacorps:/opt/mechacorps -v ${srcRoot}:${srcRoot} --network host --group-add 111 --group-add 995 --group-add 1000"
             }
         }
 
         options {
             buildDiscarder(logRotator(numToKeepStr: '10'))
+            // Serialize builds per job — each environment maps to one Jenkins job,
+            // so this prevents concurrent webhooks on the same env from racing
+            // on srcRoot during the Sync/Deploy stages.
+            disableConcurrentBuilds()
         }
 
         environment {
@@ -173,117 +183,150 @@ def call(Map config) {
             }
 
             // ================================================================
+            // Sync + deploy run together so srcRoot is pinned to the branch
+            // HEAD for the duration. disableConcurrentBuilds() at pipeline
+            // level serializes builds of this job — and since each env has
+            // its own job, that also serializes access to srcRoot.
             // Each service stage is catchError-wrapped: one failure marks
             // the build UNSTABLE but does NOT block other services.
             // ================================================================
 
-            stage('Deploy Auth') {
-                when { expression { env.AUTH_CHANGED == 'true' } }
-                steps {
-                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        script {
-                            echo "Auth service changed — rebuilding Docker container (${config.environment})"
-
-                            sh """
-                                cd ${srcDir}
-                                docker-compose -p ${authProject} -f docker-compose.auth.yml ${authEnvFlag} build --no-cache auth
-                                docker-compose -p ${authProject} -f docker-compose.auth.yml ${authEnvFlag} up -d --force-recreate auth
-                                sleep 5
-
-                                OK=false
-                                for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${authPort}/health || true)
-                                    if [ "\$RESULT" = "200" ]; then
-                                        echo "✓ Auth service health check passed (${config.environment} :${authPort})"
-                                        OK=true
-                                        break
-                                    fi
-                                    echo "Waiting for Auth service... (attempt \$i/10)"
-                                    sleep 3
-                                done
-                                if [ "\$OK" = "false" ]; then
-                                    echo "✗ Auth service health check failed (${config.environment} :${authPort})"
-                                    docker logs ${authContainer} --tail 20 2>&1 || true
-                                    exit 1
-                                fi
-                            """
-                            env.AUTH_DEPLOYED = "true"
-                        }
+            stage('Sync and Deploy') {
+                when {
+                    expression {
+                        env.AUTH_CHANGED == 'true' ||
+                        env.ACCOUNT_SERVICE_CHANGED == 'true' ||
+                        env.AUCTION_HOUSE_CHANGED == 'true'
                     }
                 }
-            }
-
-            stage('Deploy AccountService') {
-                when { expression { env.ACCOUNT_SERVICE_CHANGED == 'true' } }
-                steps {
-                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        script {
-                            echo "AccountService changed — rebuilding Docker container (${config.environment})"
-
+                stages {
+                    stage('Sync Src Tree') {
+                        steps {
                             sh """
-                                # Ensure the account database exists (shares postgres with Auth)
-                                docker exec ${postgresContainer} psql -U mechacorps -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'mechacorps_account'" | grep -q 1 || \
-                                    docker exec ${postgresContainer} psql -U mechacorps -d postgres -c "CREATE DATABASE mechacorps_account;" || true
-
-                                cd ${srcDir}
-                                docker-compose -p ${accountProject} -f docker-compose.account.yml ${accountEnvFlag} build --no-cache account-service
-                                docker-compose -p ${accountProject} -f docker-compose.account.yml ${accountEnvFlag} up -d --force-recreate account-service
-                                sleep 5
-
-                                OK=false
-                                for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${accountPort}/health || true)
-                                    if [ "\$RESULT" = "200" ]; then
-                                        echo "✓ AccountService health check passed (${config.environment} :${accountPort})"
-                                        OK=true
-                                        break
-                                    fi
-                                    echo "Waiting for AccountService... (attempt \$i/10)"
-                                    sleep 3
-                                done
-                                if [ "\$OK" = "false" ]; then
-                                    echo "✗ AccountService health check failed (${config.environment} :${accountPort})"
-                                    docker logs ${accountContainer} --tail 20 2>&1 || true
-                                    exit 1
+                                set -e
+                                if [ ! -d ${srcRoot}/.git ]; then
+                                    echo "Bootstrapping ${srcRoot} from \${GIT_URL}"
+                                    git clone "\${GIT_URL}" ${srcRoot}
                                 fi
+                                cd ${srcRoot}
+                                git fetch origin --prune
+                                git checkout ${config.branch}
+                                git reset --hard origin/${config.branch}
+                                git clean -fdx
+                                echo "Synced ${srcRoot} to \$(git rev-parse --short HEAD) on ${config.branch}"
                             """
-                            env.ACCOUNT_SERVICE_DEPLOYED = "true"
                         }
                     }
-                }
-            }
 
-            stage('Deploy AuctionHouse') {
-                when { expression { env.AUCTION_HOUSE_CHANGED == 'true' } }
-                steps {
-                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        script {
-                            echo "AuctionHouse changed — rebuilding Docker container (${config.environment})"
+                    stage('Deploy Auth') {
+                        when { expression { env.AUTH_CHANGED == 'true' } }
+                        steps {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                script {
+                                    echo "Auth service changed — rebuilding Docker container (${config.environment})"
 
-                            sh """
-                                cd ${srcDir}
-                                docker-compose -p ${auctionProject} -f docker-compose.auction.yml ${auctionEnvFlag} build --no-cache auction-house
-                                docker-compose -p ${auctionProject} -f docker-compose.auction.yml ${auctionEnvFlag} up -d --force-recreate auction-house
-                                sleep 5
+                                    sh """
+                                        cd ${srcDir}
+                                        docker-compose -p ${authProject} -f docker-compose.auth.yml ${authEnvFlag} build --no-cache auth
+                                        docker-compose -p ${authProject} -f docker-compose.auth.yml ${authEnvFlag} up -d --force-recreate auth
+                                        sleep 5
 
-                                OK=false
-                                for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${auctionPort}/health || true)
-                                    if [ "\$RESULT" = "200" ]; then
-                                        echo "✓ AuctionHouse health check passed (${config.environment} :${auctionPort})"
-                                        OK=true
-                                        break
-                                    fi
-                                    echo "Waiting for AuctionHouse... (attempt \$i/10)"
-                                    sleep 3
-                                done
-                                if [ "\$OK" = "false" ]; then
-                                    echo "✗ AuctionHouse health check failed (${config.environment} :${auctionPort})"
-                                    docker logs ${auctionContainer} --tail 20 2>&1 || true
-                                    exit 1
-                                fi
-                            """
-                            env.AUCTION_HOUSE_DEPLOYED = "true"
+                                        OK=false
+                                        for i in \$(seq 1 10); do
+                                            RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${authPort}/health || true)
+                                            if [ "\$RESULT" = "200" ]; then
+                                                echo "✓ Auth service health check passed (${config.environment} :${authPort})"
+                                                OK=true
+                                                break
+                                            fi
+                                            echo "Waiting for Auth service... (attempt \$i/10)"
+                                            sleep 3
+                                        done
+                                        if [ "\$OK" = "false" ]; then
+                                            echo "✗ Auth service health check failed (${config.environment} :${authPort})"
+                                            docker logs ${authContainer} --tail 20 2>&1 || true
+                                            exit 1
+                                        fi
+                                    """
+                                    env.AUTH_DEPLOYED = "true"
+                                }
+                            }
+                        }
+                    }
+
+                    stage('Deploy AccountService') {
+                        when { expression { env.ACCOUNT_SERVICE_CHANGED == 'true' } }
+                        steps {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                script {
+                                    echo "AccountService changed — rebuilding Docker container (${config.environment})"
+
+                                    sh """
+                                        # Ensure the account database exists (shares postgres with Auth)
+                                        docker exec ${postgresContainer} psql -U mechacorps -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'mechacorps_account'" | grep -q 1 || \
+                                            docker exec ${postgresContainer} psql -U mechacorps -d postgres -c "CREATE DATABASE mechacorps_account;" || true
+
+                                        cd ${srcDir}
+                                        docker-compose -p ${accountProject} -f docker-compose.account.yml ${accountEnvFlag} build --no-cache account-service
+                                        docker-compose -p ${accountProject} -f docker-compose.account.yml ${accountEnvFlag} up -d --force-recreate account-service
+                                        sleep 5
+
+                                        OK=false
+                                        for i in \$(seq 1 10); do
+                                            RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${accountPort}/health || true)
+                                            if [ "\$RESULT" = "200" ]; then
+                                                echo "✓ AccountService health check passed (${config.environment} :${accountPort})"
+                                                OK=true
+                                                break
+                                            fi
+                                            echo "Waiting for AccountService... (attempt \$i/10)"
+                                            sleep 3
+                                        done
+                                        if [ "\$OK" = "false" ]; then
+                                            echo "✗ AccountService health check failed (${config.environment} :${accountPort})"
+                                            docker logs ${accountContainer} --tail 20 2>&1 || true
+                                            exit 1
+                                        fi
+                                    """
+                                    env.ACCOUNT_SERVICE_DEPLOYED = "true"
+                                }
+                            }
+                        }
+                    }
+
+                    stage('Deploy AuctionHouse') {
+                        when { expression { env.AUCTION_HOUSE_CHANGED == 'true' } }
+                        steps {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                script {
+                                    echo "AuctionHouse changed — rebuilding Docker container (${config.environment})"
+
+                                    sh """
+                                        cd ${srcDir}
+                                        docker-compose -p ${auctionProject} -f docker-compose.auction.yml ${auctionEnvFlag} build --no-cache auction-house
+                                        docker-compose -p ${auctionProject} -f docker-compose.auction.yml ${auctionEnvFlag} up -d --force-recreate auction-house
+                                        sleep 5
+
+                                        OK=false
+                                        for i in \$(seq 1 10); do
+                                            RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${auctionPort}/health || true)
+                                            if [ "\$RESULT" = "200" ]; then
+                                                echo "✓ AuctionHouse health check passed (${config.environment} :${auctionPort})"
+                                                OK=true
+                                                break
+                                            fi
+                                            echo "Waiting for AuctionHouse... (attempt \$i/10)"
+                                            sleep 3
+                                        done
+                                        if [ "\$OK" = "false" ]; then
+                                            echo "✗ AuctionHouse health check failed (${config.environment} :${auctionPort})"
+                                            docker logs ${auctionContainer} --tail 20 2>&1 || true
+                                            exit 1
+                                        fi
+                                    """
+                                    env.AUCTION_HOUSE_DEPLOYED = "true"
+                                }
+                            }
                         }
                     }
                 }
