@@ -219,8 +219,11 @@ def call(Map config) {
                                 fi
                                 cd ${srcRoot}
                                 git fetch origin --prune
-                                git checkout ${config.branch} 2>/dev/null || git checkout -b ${config.branch} origin/${config.branch}
-                                git reset --hard origin/${config.branch}
+                                # -f -B: force-create-or-reset local branch to origin/<branch>
+                                # and overwrite any untracked files that would conflict. Required
+                                # on a freshly git-init'd deploy dir where pre-existing working-tree
+                                # files collide with the incoming tracked content.
+                                git checkout -f -B ${config.branch} origin/${config.branch}
                                 # -fd (not -fdx): preserve gitignored secrets like .env.auth.${env}
                                 git clean -fd
                                 echo "Synced ${srcRoot} to \$(git rev-parse --short HEAD) on ${config.branch}"
