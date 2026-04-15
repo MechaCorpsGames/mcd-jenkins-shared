@@ -212,7 +212,8 @@ def call(Map config) {
                                 git fetch origin --prune
                                 git checkout ${config.branch}
                                 git reset --hard origin/${config.branch}
-                                git clean -fdx
+                                # -fd (not -fdx): preserve gitignored secrets like .env.auth.${env}
+                                git clean -fd
                                 echo "Synced ${srcRoot} to \$(git rev-parse --short HEAD) on ${config.branch}"
                             """
                         }
