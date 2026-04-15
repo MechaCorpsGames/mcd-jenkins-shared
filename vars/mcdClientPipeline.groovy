@@ -168,6 +168,51 @@ def call(Map config) {
                 }
             }
 
+            // The practice-match bot is a headless Godot instance the proxy
+            // spawns from /app/project (see Src/docker-compose.proxy.yml).
+            // We publish a coherent snapshot of the GDScript project plus the
+            // freshly built Linux Debug MCDCoreExt to a per-env deploy path
+            // so bot GDScript and the GDExtension .so never drift apart.
+            //
+            // Without this stage the proxy falls back to mounting the shared
+            // dev checkout at /var/opt/mechacorpsgames, which only gets
+            // rebuilt when a human runs build.sh by hand — any BuildInfo
+            // method added in GDScript parses as "Identifier not declared"
+            // until someone does that rebuild.
+            stage('Publish Bot Runtime') {
+                when {
+                    expression {
+                        env.CLIENT_CHANGED == 'true' && config.botProjectPath
+                    }
+                }
+                steps {
+                    script { env.BUILD_PHASE = 'Publish Bot Runtime' }
+                    sh """
+                        mkdir -p ${config.botProjectPath}
+                        # Re-import so .godot/extension_list.cfg reflects the
+                        # just-built MCDCoreExt. Without this the headless bot
+                        # fails parse with "Identifier BuildInfo not declared"
+                        # because Godot does not auto-load extensions that are
+                        # not registered in the cache.
+                        godot --headless --import 2>/dev/null || true
+                        # .godot/ IS included so the deploy path ships with a
+                        # usable extension_list.cfg and imported asset cache.
+                        # Source build dirs and extern/ are not needed at
+                        # runtime (only the installed bin/ .so matters).
+                        rsync -a --delete \
+                            --exclude='.git/' \
+                            --exclude='reports/' \
+                            --exclude='Src/*/build*/' \
+                            --exclude='Src/*/extern/' \
+                            --exclude='Src/MCDCoreExt/build-win/' \
+                            --exclude='Src/MCDCoreExt/build-windows/' \
+                            --exclude='Src/MCDCoreExt/build-android/' \
+                            ./ ${config.botProjectPath}/
+                        echo "✓ Published bot runtime to ${config.botProjectPath} (\$(cd ${config.botProjectPath} && stat -c %y bin/lib/Linux-x86_64/libMCDCoreExt-d.so 2>/dev/null))"
+                    """
+                }
+            }
+
             // After Linux Debug, run tests + remaining builds in parallel.
             // Each platform uses a separate build directory so there are no conflicts.
             stage('Cross-platform Builds & Tests') {
