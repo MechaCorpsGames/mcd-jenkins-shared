@@ -182,29 +182,6 @@ def call(Map config) {
                 }
             }
 
-            // Deploy stages run docker-compose build from the shared
-            // /var/opt/mechacorpsgames/Src tree, which every environment's
-            // pipeline reuses. Sync it to the branch HEAD before any deploy
-            // so the container images match the code being deployed.
-            stage('Sync Src Tree') {
-                when {
-                    expression {
-                        env.AUTH_CHANGED == 'true' ||
-                        env.ACCOUNT_SERVICE_CHANGED == 'true' ||
-                        env.AUCTION_HOUSE_CHANGED == 'true'
-                    }
-                }
-                steps {
-                    sh """
-                        cd ${srcDir}/..
-                        git fetch origin ${config.branch}
-                        git checkout ${config.branch}
-                        git reset --hard origin/${config.branch}
-                        git log -1 --oneline
-                    """
-                }
-            }
-
             // ================================================================
             // Sync + deploy run together so srcRoot is pinned to the branch
             // HEAD for the duration. disableConcurrentBuilds() at pipeline
