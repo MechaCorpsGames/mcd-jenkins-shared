@@ -400,6 +400,10 @@ EOF
                         def envFile = config.proxyEnvFile ?: '.env.proxy'
                         def composeProject = config.proxyProject ?: 'src'
                         def basePort = config.tcpPort - 69  // e.g., 42069 -> 42000
+                        // Per-env CI-managed Godot project for practice-match bots.
+                        // Populated by mcdClientPipeline's "Publish Bot Runtime"
+                        // stage; the proxy mounts this path read-only.
+                        def botProjectPath = config.botProjectPath ?: "${config.deployPath}/godot-bot-project"
 
                         // Generate proxy env file from pipeline config.
                         // Read Account Service API key from its env file so the proxy
@@ -420,6 +424,7 @@ PROXY_TCP_PORT=${config.tcpPort}
 PROXY_WS_PORT=${config.wsPort ?: config.tcpPort + 1}
 PROXY_BASE_PORT=${basePort}
 DEPLOY_PATH=${config.deployPath}
+BOT_PROJECT_ROOT=${botProjectPath}
 SERVER_SENTRY_DSN=${config.sentryDsn ?: ''}
 CRASH_REPORT_URL=${config.crashReportUrl ?: "http://localhost:${basePort + 90}"}
 AUTH_URL=${config.authUrl ?: "http://localhost:${basePort + 81}"}
