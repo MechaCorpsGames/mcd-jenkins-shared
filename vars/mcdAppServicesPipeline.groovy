@@ -205,12 +205,21 @@ def call(Map config) {
                             sh """
                                 set -e
                                 if [ ! -d ${srcRoot}/.git ]; then
-                                    echo "Bootstrapping ${srcRoot} from \${GIT_URL}"
-                                    git clone "\${GIT_URL}" ${srcRoot}
+                                    if [ -d ${srcRoot} ] && [ "\$(ls -A ${srcRoot} 2>/dev/null)" ]; then
+                                        # Directory exists with files but no .git — recover in place
+                                        # without wiping gitignored secrets (.env.auth.${env} etc.).
+                                        echo "Recovering ${srcRoot}: exists without .git, initializing in place"
+                                        cd ${srcRoot}
+                                        git init -q
+                                        git remote add origin "\${GIT_URL}"
+                                    else
+                                        echo "Bootstrapping ${srcRoot} from \${GIT_URL}"
+                                        git clone "\${GIT_URL}" ${srcRoot}
+                                    fi
                                 fi
                                 cd ${srcRoot}
                                 git fetch origin --prune
-                                git checkout ${config.branch}
+                                git checkout ${config.branch} 2>/dev/null || git checkout -b ${config.branch} origin/${config.branch}
                                 git reset --hard origin/${config.branch}
                                 # -fd (not -fdx): preserve gitignored secrets like .env.auth.${env}
                                 git clean -fd
