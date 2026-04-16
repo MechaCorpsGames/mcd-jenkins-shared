@@ -209,12 +209,17 @@ def call(Map config) {
                                 # a manual sudo rsync or docker build that wrote as root).
                                 # Without this, git checkout fails with "Permission denied"
                                 # on dirs like Src/ that are root-owned inside a jenkins-
-                                # owned parent. The sudoers rule restricts this to
-                                # /var/opt/mechacorpsgames-* paths only.
+                                # owned parent.
+                                #
+                                # This runs inside a Docker build-agent container, so host
+                                # sudo is not available. Instead, spawn a throwaway Alpine
+                                # container via the mounted Docker socket — Docker runs
+                                # containers as root by default, so it can chown without
+                                # any sudoers configuration.
                                 if [ -d ${srcRoot} ]; then
                                     if find ${srcRoot} -maxdepth 2 ! -user \$(id -u) -print -quit 2>/dev/null | grep -q .; then
                                         echo "Repairing ownership on ${srcRoot} (foreign-owned files detected)"
-                                        sudo /usr/local/bin/mcd-fix-ownership.sh ${srcRoot}
+                                        docker run --rm -v ${srcRoot}:${srcRoot} alpine chown -R \$(id -u):\$(id -g) ${srcRoot}
                                     fi
                                 fi
 
