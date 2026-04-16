@@ -204,6 +204,20 @@ def call(Map config) {
                         steps {
                             sh """
                                 set -e
+
+                                # Repair ownership if root-owned files crept in (e.g. from
+                                # a manual sudo rsync or docker build that wrote as root).
+                                # Without this, git checkout fails with "Permission denied"
+                                # on dirs like Src/ that are root-owned inside a jenkins-
+                                # owned parent. The sudoers rule restricts this to
+                                # /var/opt/mechacorpsgames-* paths only.
+                                if [ -d ${srcRoot} ]; then
+                                    if find ${srcRoot} -maxdepth 2 ! -user \$(id -u) -print -quit 2>/dev/null | grep -q .; then
+                                        echo "Repairing ownership on ${srcRoot} (foreign-owned files detected)"
+                                        sudo /usr/local/bin/mcd-fix-ownership.sh ${srcRoot}
+                                    fi
+                                fi
+
                                 if [ ! -d ${srcRoot}/.git ]; then
                                     if [ -d ${srcRoot} ] && [ "\$(ls -A ${srcRoot} 2>/dev/null)" ]; then
                                         # Directory exists with files but no .git — recover in place
