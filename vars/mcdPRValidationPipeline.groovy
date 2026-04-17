@@ -162,6 +162,19 @@ def call(Map config) {
                 }
             }
 
+            stage('Go Lint') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        echo "Installing golangci-lint..."
+                        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+                        export PATH="$(go env GOPATH)/bin:$PATH"
+                        echo "Running lint on all Go modules..."
+                        make lint
+                    '''
+                }
+            }
+
             stage('Setup Dependencies') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
                 steps {

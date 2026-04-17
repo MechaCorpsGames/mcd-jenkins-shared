@@ -141,6 +141,17 @@ def call(Map config) {
                 }
             }
 
+            stage('Go Lint') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+                        export PATH="$(go env GOPATH)/bin:$PATH"
+                        make lint
+                    '''
+                }
+            }
+
             stage('Build GameServer, TestClient & Proxy') {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
