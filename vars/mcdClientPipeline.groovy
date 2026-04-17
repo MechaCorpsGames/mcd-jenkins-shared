@@ -19,6 +19,15 @@ def call(Map config) {
 
         options {
             buildDiscarder(logRotator(numToKeepStr: '10', artifactDaysToKeepStr: '7', artifactNumToKeepStr: '10'))
+            // Serialize MCDClient-* builds so concurrent runs can't race on
+            // the per-env bot-runtime deploy path (the Publish Bot Runtime
+            // rsync --delete blew up on `.core.XYZ` temp files under the
+            // MCDClient-FeatureBackend 21:01 burst). Lockable Resources
+            // plugin isn't installed here (confirmed by #64's DSL error
+            // listing valid steps — `lock` is absent), so we fall back to
+            // pipeline-level serialization. Waiting 10–15 min in a bad
+            // burst is better than a silent rsync race.
+            disableConcurrentBuilds()
         }
 
         environment {
@@ -200,33 +209,29 @@ def call(Map config) {
                 }
                 steps {
                     script { env.BUILD_PHASE = 'Publish Bot Runtime' }
-                    // `lock` is a Lockable-Resources pipeline step, not a
-                    // declarative stage option — it must wrap `steps`.
-                    lock(resource: "mcd-bot-runtime-${config.environment}") {
-                        sh """
-                            mkdir -p ${config.botProjectPath}
-                            # Re-import so .godot/extension_list.cfg reflects the
-                            # just-built MCDCoreExt. Without this the headless bot
-                            # fails parse with "Identifier BuildInfo not declared"
-                            # because Godot does not auto-load extensions that are
-                            # not registered in the cache.
-                            godot --headless --import 2>/dev/null || true
-                            # .godot/ IS included so the deploy path ships with a
-                            # usable extension_list.cfg and imported asset cache.
-                            # Source build dirs and extern/ are not needed at
-                            # runtime (only the installed bin/ .so matters).
-                            rsync -a --delete \
-                                --exclude='.git/' \
-                                --exclude='reports/' \
-                                --exclude='Src/*/build*/' \
-                                --exclude='Src/*/extern/' \
-                                --exclude='Src/MCDCoreExt/build-win/' \
-                                --exclude='Src/MCDCoreExt/build-windows/' \
-                                --exclude='Src/MCDCoreExt/build-android/' \
-                                ./ ${config.botProjectPath}/
-                            echo "✓ Published bot runtime to ${config.botProjectPath} (\$(cd ${config.botProjectPath} && stat -c %y bin/lib/Linux-x86_64/libMCDCoreExt-d.so 2>/dev/null))"
-                        """
-                    }
+                    sh """
+                        mkdir -p ${config.botProjectPath}
+                        # Re-import so .godot/extension_list.cfg reflects the
+                        # just-built MCDCoreExt. Without this the headless bot
+                        # fails parse with "Identifier BuildInfo not declared"
+                        # because Godot does not auto-load extensions that are
+                        # not registered in the cache.
+                        godot --headless --import 2>/dev/null || true
+                        # .godot/ IS included so the deploy path ships with a
+                        # usable extension_list.cfg and imported asset cache.
+                        # Source build dirs and extern/ are not needed at
+                        # runtime (only the installed bin/ .so matters).
+                        rsync -a --delete \
+                            --exclude='.git/' \
+                            --exclude='reports/' \
+                            --exclude='Src/*/build*/' \
+                            --exclude='Src/*/extern/' \
+                            --exclude='Src/MCDCoreExt/build-win/' \
+                            --exclude='Src/MCDCoreExt/build-windows/' \
+                            --exclude='Src/MCDCoreExt/build-android/' \
+                            ./ ${config.botProjectPath}/
+                        echo "✓ Published bot runtime to ${config.botProjectPath} (\$(cd ${config.botProjectPath} && stat -c %y bin/lib/Linux-x86_64/libMCDCoreExt-d.so 2>/dev/null))"
+                    """
                 }
             }
 
