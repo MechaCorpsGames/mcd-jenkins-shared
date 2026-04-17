@@ -179,11 +179,27 @@ def call(Map config) {
             // rebuilt when a human runs build.sh by hand — any BuildInfo
             // method added in GDScript parses as "Identifier not declared"
             // until someone does that rebuild.
+            //
+            // Serialize writes to the per-env bot-runtime deploy path.
+            // Without this lock, concurrent builds (e.g. a burst of merges to
+            // features/backend) both rsync into the same
+            // ${config.botProjectPath} with --delete, and the mid-transfer
+            // temp files (e.g. `.core.XYZ`) vanish as the other build's
+            // delete pass sweeps them — rsync exits 23 and every downstream
+            // stage cascades to FAILED.
+            //
+            // MCDClient-FeatureBackend #57 was the poster child: five merges
+            // landed in 15 minutes, #55 and #57 ran concurrently in
+            // workspace@N dirs, both targeting /opt/mechacorps/feature-backend
+            // /godot-bot-project, #57's rsync hit the race and failed.
             stage('Publish Bot Runtime') {
                 when {
                     expression {
                         env.CLIENT_CHANGED == 'true' && config.botProjectPath
                     }
+                }
+                options {
+                    lock(resource: "mcd-bot-runtime-${config.environment}")
                 }
                 steps {
                     script { env.BUILD_PHASE = 'Publish Bot Runtime' }
