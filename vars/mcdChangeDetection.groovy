@@ -8,7 +8,8 @@
  * @param baseRef  Git ref to diff against (e.g., 'origin/main', a commit SHA)
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
  *         monitoringChanged, crashReportingChanged,
- *         accountServiceChanged, auctionHouseChanged, changedFiles (list)
+ *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
+ *         changedFiles (list)
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -21,7 +22,8 @@ def detect(String baseRef) {
         return [serverChanged: true, clientChanged: true, authChanged: true,
                 wikiChanged: true, monitoringChanged: true,
                 crashReportingChanged: true, accountServiceChanged: true,
-                auctionHouseChanged: true, changedFiles: []]
+                auctionHouseChanged: true, discordBotChanged: true,
+                changedFiles: []]
     }
 
     def changedFiles = changedFilesRaw.split('\n').collect { it.trim() }.findAll { it }
@@ -36,6 +38,7 @@ def detect(String baseRef) {
     def crashReportingChanged = false
     def accountServiceChanged = false
     def auctionHouseChanged = false
+    def discordBotChanged = false
     def unmatchedFiles = []
 
     for (file in changedFiles) {
@@ -71,6 +74,9 @@ def detect(String baseRef) {
             case 'auction-house':
                 auctionHouseChanged = true
                 break
+            case 'discord-bot':
+                discordBotChanged = true
+                break
             case 'wiki':
                 wikiChanged = true
                 break
@@ -92,13 +98,14 @@ def detect(String baseRef) {
         clientChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged} ==="
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
             crashReportingChanged: crashReportingChanged,
             accountServiceChanged: accountServiceChanged,
             auctionHouseChanged: auctionHouseChanged,
+            discordBotChanged: discordBotChanged,
             changedFiles: changedFiles]
 }
 
@@ -166,6 +173,9 @@ def categorize(String filePath) {
     // AuctionHouse (per-environment app service)
     if (filePath.startsWith('Src/AuctionHouse/')) return 'auction-house'
     if (filePath.startsWith('Src/docker-compose.auction')) return 'auction-house'
+
+    // Discord bot (standalone systemd service on host)
+    if (filePath.startsWith('Src/Tools/discord-bot/')) return 'discord-bot'
 
     // Documentation / tooling paths (no build needed)
     def docPrefixes = [
