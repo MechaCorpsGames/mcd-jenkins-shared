@@ -137,23 +137,31 @@ def call(Map config) {
                         script {
                             echo "Installing ${binaryName} to ${installDir} and restarting ${serviceName}.service"
 
-                            sh """
-                                # install(1) handles atomic replace + mode; sudo is
-                                # needed because /opt/mechacorps is owned by root/
-                                # the deploy user, not jenkins.
-                                sudo install -m 755 ${botDir}/${binaryName} ${installDir}/${binaryName}
+                            // systemctl is not available inside the build-agent
+                            // container, so systemd operations shell out to the
+                            // host via SSH to jenkins@localhost. That account has
+                            // NOPASSWD sudoers rules (see /etc/sudoers.d/
+                            // jenkins-discord-bot) limited to this unit.
+                            def sshHost = "jenkins@localhost"
+                            def sshOpts = "-o BatchMode=yes -o StrictHostKeyChecking=accept-new -i /var/lib/jenkins/.ssh/id_ed25519"
 
-                                sudo systemctl restart ${serviceName}.service
+                            sh """
+                                # install(1) handles atomic replace + mode. /opt/mechacorps
+                                # is bind-mounted and writable by the jenkins user (group
+                                # 1000 / mechacorps), so no sudo needed here.
+                                install -m 755 ${botDir}/${binaryName} ${installDir}/${binaryName}
+
+                                ssh ${sshOpts} ${sshHost} 'sudo /usr/bin/systemctl restart ${serviceName}.service'
 
                                 # Give the bot a moment to connect to Discord before
                                 # checking status.
                                 sleep 3
 
-                                if systemctl is-active --quiet ${serviceName}.service; then
+                                if ssh ${sshOpts} ${sshHost} 'sudo /usr/bin/systemctl is-active ${serviceName}.service' | grep -q '^active\$'; then
                                     echo "✓ ${serviceName}.service is active"
                                 else
                                     echo "✗ ${serviceName}.service failed to start"
-                                    sudo journalctl -u ${serviceName}.service -n 40 --no-pager || true
+                                    ssh ${sshOpts} ${sshHost} 'sudo /usr/bin/journalctl -u ${serviceName}.service -n 40 --no-pager' || true
                                     exit 1
                                 fi
                             """
