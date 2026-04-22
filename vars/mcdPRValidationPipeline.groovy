@@ -274,6 +274,13 @@ def call(Map config) {
                 }
             }
 
+            stage('Proxy Unit Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh 'make test-proxy'
+                }
+            }
+
             stage('Integration Test') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {

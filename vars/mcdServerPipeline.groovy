@@ -190,6 +190,13 @@ def call(Map config) {
                 }
             }
 
+            stage('Proxy Unit Tests') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh 'make test-proxy'
+                }
+            }
+
             stage('Integration Test') {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
