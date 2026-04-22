@@ -521,39 +521,72 @@ def call(Map config) {
                         mkdir -p \${ARTIFACT_BASE}/game/Windows
                         mkdir -p \${ARTIFACT_BASE}/game/Linux
 
+                        # Godot's single-file export flattens every GDExtension
+                        # library + dependency into exports/ regardless of the
+                        # nested paths declared in the .gdextension files (those
+                        # get baked into the pck). Runtime loads read the pck's
+                        # .gdextension entries — e.g. res://bin/MCDCoreExt.gdextension
+                        # → lib/Linux-x86_64/libMCDCoreExt.so — so each loose lib
+                        # must be re-nested to match before zipping, otherwise
+                        # Godot logs "GDExtension dynamic library not found" and
+                        # every autoload that touches those classes fails to
+                        # parse (brown-screen on Linux in Steam builds).
+
+                        # --- Windows ---
                         cp exports/MechaCorpsDraft.exe \${ARTIFACT_BASE}/game/Windows/
+
+                        mkdir -p \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64
+                        mkdir -p \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64
+                        mkdir -p \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64
+
+                        # MCDCoreExt + its MinGW runtime deps (loaded by MCDCoreExt.dll,
+                        # so they live next to it in Windows's DLL search order).
+                        cp exports/MCDCoreExt.dll \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/
+                        cp bin/lib/Windows-x86_64/libcrypto-3-x64.dll \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/
+                        cp bin/lib/Windows-x86_64/libssl-3-x64.dll \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/
+                        cp bin/lib/Windows-x86_64/libwinpthread-1.dll \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/
+
+                        cp exports/libgodotsteam.windows.template_release.x86_64.dll \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64/
+                        cp exports/steam_api64.dll \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64/
+
+                        cp exports/libsentry.windows.release.x86_64.dll \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/
+                        cp exports/crashpad_handler.exe \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/
+                        cp exports/crashpad_wer.dll \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/
+
+                        # --- Linux ---
                         cp exports/MechaCorpsDraft.x86_64 \${ARTIFACT_BASE}/game/Linux/
 
-                        # CMake PREFIX "" strips the lib prefix for Windows builds.
-                        # Do not fall back to libMCDCoreExt.dll — a stale build with
-                        # the wrong name would produce a broken artifact.
-                        cp bin/lib/Windows-x86_64/MCDCoreExt.dll \${ARTIFACT_BASE}/game/Windows/
-                        cp bin/lib/Windows-x86_64/libcrypto-3-x64.dll \${ARTIFACT_BASE}/game/Windows/
-                        cp bin/lib/Windows-x86_64/libssl-3-x64.dll \${ARTIFACT_BASE}/game/Windows/
-                        cp bin/lib/Windows-x86_64/libwinpthread-1.dll \${ARTIFACT_BASE}/game/Windows/
-                        cp addons/godotsteam/win64/steam_api64.dll \${ARTIFACT_BASE}/game/Windows/
+                        mkdir -p \${ARTIFACT_BASE}/game/Linux/bin/lib/Linux-x86_64
+                        mkdir -p \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64
+                        mkdir -p \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64
 
-                        cat > \${ARTIFACT_BASE}/game/Windows/MCDCoreExt.gdextension << 'GDEXT'
-[configuration]
-entry_symbol = "example_library_init"
-compatibility_minimum = "4.3"
+                        cp exports/libMCDCoreExt.so \${ARTIFACT_BASE}/game/Linux/bin/lib/Linux-x86_64/
 
-[libraries]
-windows.release.x86_64 = "MCDCoreExt.dll"
-GDEXT
+                        cp exports/libgodotsteam.linux.template_release.x86_64.so \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64/
+                        cp exports/libsteam_api.so \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64/
 
-                        mkdir -p \${ARTIFACT_BASE}/game/Linux/lib/Linux-x86_64
-                        cp bin/lib/Linux-x86_64/libMCDCoreExt.so \${ARTIFACT_BASE}/game/Linux/lib/Linux-x86_64/
-                        cp addons/godotsteam/linux64/libsteam_api.so \${ARTIFACT_BASE}/game/Linux/
+                        cp exports/libsentry.linux.release.x86_64.so \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/
+                        cp exports/crashpad_handler \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/
+                        chmod +x \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/crashpad_handler
 
-                        cat > \${ARTIFACT_BASE}/game/Linux/MCDCoreExt.gdextension << 'GDEXT'
-[configuration]
-entry_symbol = "example_library_init"
-compatibility_minimum = "4.3"
-
-[libraries]
-linux.release.x86_64 = "lib/Linux-x86_64/libMCDCoreExt.so"
-GDEXT
+                        # Sanity check: fail loud if Godot didn't emit an expected lib
+                        # instead of shipping a half-populated zip.
+                        for f in \\
+                            \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/MCDCoreExt.dll \\
+                            \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64/libgodotsteam.windows.template_release.x86_64.dll \\
+                            \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64/steam_api64.dll \\
+                            \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/libsentry.windows.release.x86_64.dll \\
+                            \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/crashpad_handler.exe \\
+                            \${ARTIFACT_BASE}/game/Linux/bin/lib/Linux-x86_64/libMCDCoreExt.so \\
+                            \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64/libgodotsteam.linux.template_release.x86_64.so \\
+                            \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64/libsteam_api.so \\
+                            \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/libsentry.linux.release.x86_64.so \\
+                            \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/crashpad_handler; do
+                            if [ ! -f "\$f" ]; then
+                                echo "ERROR: expected GDExtension artifact missing: \$f"
+                                exit 1
+                            fi
+                        done
 
                         cd \${ARTIFACT_BASE}/game/Windows && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Windows-v${CLIENT_VERSION}.zip . && cd -
                         cd \${ARTIFACT_BASE}/game/Linux && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Linux-v${CLIENT_VERSION}.zip . && cd -
