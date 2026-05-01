@@ -442,6 +442,13 @@ CRASH_REPORTING_API_KEY=${config.crashReportKey ?: ''}
 BOT_WS_PORT=${config.botWsPort ?: basePort + 71}
 BOT_ACCOUNT=${config.botAccount ?: ''}
 BOT_PASSWORD=${config.botPassword ?: ''}
+# Test-only: set to "-gauntlet-instant-resolve" via the per-env Jenkinsfile to
+# resolve gauntlet matches via 50/50 coin flip instead of spawning a real
+# GameServer. Without this, the proxy spawns the C++ server and runs the full
+# match — useful for prod, but the swarm test wants instant resolution. The
+# var is consumed by docker-compose.proxy.yml via "\${GAUNTLET_INSTANT_RESOLVE:-}"
+# so an empty value safely no-ops.
+GAUNTLET_INSTANT_RESOLVE=${config.gauntletInstantResolve ?: ''}
 ENVEOF
                         """
                         def containerName = "${composeProject}_proxy_1"
