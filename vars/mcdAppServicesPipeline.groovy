@@ -141,17 +141,20 @@ def call(Map config) {
                             env.AUTH_CHANGED = 'true'
                             env.ACCOUNT_SERVICE_CHANGED = 'true'
                             env.AUCTION_HOUSE_CHANGED = 'true'
+                            env.DOCKER_SMOKE_CHANGED = 'true'
                         } else {
                             sh "git fetch origin ${baseRef} 2>/dev/null || true"
                             def changes = mcdChangeDetection.detect(baseRef)
                             env.AUTH_CHANGED = changes.authChanged.toString()
                             env.ACCOUNT_SERVICE_CHANGED = changes.accountServiceChanged.toString()
                             env.AUCTION_HOUSE_CHANGED = changes.auctionHouseChanged.toString()
+                            env.DOCKER_SMOKE_CHANGED = changes.dockerSmokeChanged.toString()
                         }
 
                         def anyWork = (env.AUTH_CHANGED == 'true' ||
                                        env.ACCOUNT_SERVICE_CHANGED == 'true' ||
-                                       env.AUCTION_HOUSE_CHANGED == 'true')
+                                       env.AUCTION_HOUSE_CHANGED == 'true' ||
+                                       env.DOCKER_SMOKE_CHANGED == 'true')
                         if (!anyWork) {
                             currentBuild.description += "\n⏭️ No app service changes — skipped"
                             currentBuild.result = 'NOT_BUILT'
@@ -179,6 +182,74 @@ def call(Map config) {
                             cd ../AuctionHouse && go test ./...
                         '
                     '''
+                }
+            }
+
+            // Stand up the full mcd compose stack against the just-checked-out
+            // tree and run the docker-smoke pytest suite (tests/e2e/ -m docker).
+            // The suite covers `python scripts/docker_dev.py up`: keypair
+            // generation, compose health, /health endpoints, AccountService
+            // /Data load — a strictly tighter contract than the per-service
+            // go-test stage above, which only exercises in-process code.
+            //
+            // Test failures are catchError-wrapped to UNSTABLE so deploy can
+            // still proceed. The post-block compose teardown is belt-and-
+            // suspenders: docker_dev.py owns `down --pg`, but a partial-
+            // failure or aborted run could leave the stack up on the agent.
+            //
+            // Wakes up on any of: scripts/docker_dev.py / docker/** / the
+            // smoke fixtures themselves (tests/e2e/test_docker_dev_smoke.py
+            // + conftest/helpers/test_assertions) — that's the
+            // dockerSmokeChanged flag from mcdChangeDetection — OR when any
+            // service the stack runs (Auth/Account/Auction) changes.
+            stage('Docker Smoke') {
+                when {
+                    expression {
+                        env.DOCKER_SMOKE_CHANGED == 'true' ||
+                        env.AUTH_CHANGED == 'true' ||
+                        env.ACCOUNT_SERVICE_CHANGED == 'true' ||
+                        env.AUCTION_HOUSE_CHANGED == 'true'
+                    }
+                }
+                steps {
+                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                        sh '''
+                            set -e
+                            rm -rf test-results
+                            mkdir -p test-results
+
+                            # Pre-cleanup: a previous build that didn't tear
+                            # down cleanly would leave containers using the
+                            # same fixed names (mcd-postgres-1, mcd-auth-1,
+                            # mcd-account-1, mcd-auction-1). docker_dev.py up
+                            # would then either reuse them (masking real
+                            # bugs) or conflict on names.
+                            docker compose --project-directory docker -f docker/compose.yml down -v --remove-orphans 2>/dev/null || true
+
+                            unset GOROOT
+                            nix develop . --command bash -c '
+                                python -m pytest tests/e2e/ -m docker --junitxml=test-results/docker-smoke.xml
+                            '
+                        '''
+                    }
+                }
+                post {
+                    always {
+                        // Belt-and-suspenders teardown — the smoke owns
+                        // `down --pg` but a partial failure or pytest abort
+                        // could leave the stack up. The next build would
+                        // hit name collisions on mcd-* containers.
+                        sh '''
+                            docker compose --project-directory docker -f docker/compose.yml down -v --remove-orphans 2>/dev/null || true
+                        '''
+                        script {
+                            try {
+                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'test-results/docker-smoke.xml'
+                            } catch (NoSuchMethodError e) {
+                                echo "JUnit plugin not installed — skipping test report publishing"
+                            }
+                        }
+                    }
                 }
             }
 
