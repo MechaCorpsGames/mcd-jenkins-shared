@@ -59,10 +59,10 @@ def call(Map config) {
                 silentResponse: false,
                 // Filter: only trigger when the push is to our branch AND touches server-relevant paths
                 // Paths: GameServer, Proxy, TestClient (server-only), Include/External/Data (shared),
-                //        Shared (Go services), Validation (unknown→both), deploy/go.work/docker-compose.proxy,
-                //        flake.nix/lock, Jenkinsfile.server (pipeline itself)
+                //        Shared (Go services), Validation (unknown→both), MCPGameServer (Go MCP harness),
+                //        deploy/go.work/docker-compose.proxy, flake.nix/lock, Jenkinsfile.server (pipeline itself)
                 regexpFilterText: '$ref $files_added $files_modified $files_removed',
-                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(GameServer|Proxy|TestClient|Include|External|Shared|Validation)/|Data/|Src/(deploy|go\\.work|docker-compose\\.proxy)|\\.Jenkins/Jenkinsfile\\.server|flake\\.|scripts/dev-pg)"
+                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(GameServer|Proxy|TestClient|Include|External|Shared|Validation|MCPGameServer)/|Data/|Src/(deploy|go\\.work|docker-compose\\.proxy)|\\.Jenkins/Jenkinsfile\\.server|flake\\.|scripts/dev-pg)"
             )
         }
 
@@ -123,14 +123,16 @@ def call(Map config) {
                         if (!baseRef || baseRef.startsWith('0000000')) {
                             echo "No valid before SHA — building everything"
                             env.SERVER_CHANGED = 'true'
+                            env.MCP_GAME_SERVER_CHANGED = 'true'
                         } else {
                             // Ensure the before SHA is available locally
                             sh "git fetch origin ${baseRef} 2>/dev/null || true"
                             def changes = mcdChangeDetection.detect(baseRef)
                             env.SERVER_CHANGED = changes.serverChanged.toString()
+                            env.MCP_GAME_SERVER_CHANGED = changes.mcpGameServerChanged.toString()
                         }
 
-                        if (env.SERVER_CHANGED != 'true') {
+                        if (env.SERVER_CHANGED != 'true' && env.MCP_GAME_SERVER_CHANGED != 'true') {
                             currentBuild.description += "\n⏭️ No server changes — skipped"
                             currentBuild.result = 'NOT_BUILT'
                         }
@@ -273,6 +275,35 @@ def call(Map config) {
                         if (testResult != 0) {
                             error("Integration test failed")
                         }
+                    }
+                }
+            }
+
+            stage('MCP Game Server Tests') {
+                // Hermetic Go test suite for the Claude-as-Player MCP harness.
+                // Unit tests cover protocol codec, session/legal-actions, tools,
+                // artifacts. Integration tests boot the MCP binary against an
+                // in-process FakeProxy (one server / one match per ADR mc-4bi.1
+                // §11.2) — no external Proxy/GameServer/AccountService stack.
+                //
+                // On failure the suite's dumpSessionLogOnFail helper prints
+                // mcp_session.log via t.Logf, which `go test -v` captures into
+                // mcp-test.log. That log is archived as the postmortem artifact
+                // (logs/{gameUUID}/ live in t.TempDir() and are cleaned by the
+                // test framework before this stage's post block runs).
+                when { expression { env.MCP_GAME_SERVER_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        set -o pipefail
+                        mkdir -p reports/mcp-game-server
+                        cd Src/MCPGameServer
+                        go test -v ./... 2>&1 | tee ../../reports/mcp-game-server/unit.log
+                        go test -v -tags=integration ./integration_test/... 2>&1 | tee ../../reports/mcp-game-server/integration.log
+                    '''
+                }
+                post {
+                    failure {
+                        archiveArtifacts artifacts: 'reports/mcp-game-server/**', allowEmptyArchive: true, fingerprint: true
                     }
                 }
             }
