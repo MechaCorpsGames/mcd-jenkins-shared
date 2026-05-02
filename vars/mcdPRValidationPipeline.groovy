@@ -238,6 +238,33 @@ def call(Map config) {
                 }
             }
 
+            // Card-validator addon ships its own bespoke runner under
+            // addons/card_validator/tests/ (predates GdUnit4 in this addon).
+            // `make test-validator` invokes the headless runner and writes
+            // JUnit XML to test-results/card_validator_junit.xml.
+            // Gated on CLIENT_CHANGED to match GDScript Tests above; addons/**
+            // already routes to the 'client' category in mcdChangeDetection.
+            stage('Card Validator Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        rm -rf test-results/card_validator_junit.xml
+                        make test-validator
+                    '''
+                }
+                post {
+                    always {
+                        script {
+                            try {
+                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'test-results/card_validator_junit.xml'
+                            } catch (NoSuchMethodError e) {
+                                echo "JUnit plugin not installed — skipping test report publishing"
+                            }
+                        }
+                    }
+                }
+            }
+
             stage('Build GameServer, TestClient & Proxy') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
