@@ -167,7 +167,10 @@ def call(Map config) {
                 steps {
                     sh '''
                         echo "Installing golangci-lint..."
-                        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+                        # Pinned (mc-qhu): unpinned @latest broke unrelated PRs whenever
+                        # upstream released a new linter set. Bump deliberately in a
+                        # follow-up PR after triaging any new findings.
+                        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.0
                         export PATH="$(go env GOPATH)/bin:$PATH"
                         echo "Running lint on all Go modules..."
                         make lint
