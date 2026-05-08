@@ -9,7 +9,14 @@
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
  *         monitoringChanged, crashReportingChanged,
  *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
+ *         mcpGameServerChanged,
  *         changedFiles (list)
+ *
+ * mcpGameServerChanged tracks Src/MCPGameServer/ — the v1.1 Claude-as-player
+ * stack (mc-ejzh). It is local-only; no deploy pipeline. It only gates the
+ * per-PR playtest-bench-unit stage and the nightly playtest-bench-integration
+ * stage. Distinct from the existing 'crash-reporting' route that handles
+ * Src/MCPServer/ (the original v1 MCP-for-crashes binary).
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -23,6 +30,7 @@ def detect(String baseRef) {
                 wikiChanged: true, monitoringChanged: true,
                 crashReportingChanged: true, accountServiceChanged: true,
                 auctionHouseChanged: true, discordBotChanged: true,
+                mcpGameServerChanged: true,
                 changedFiles: []]
     }
 
@@ -39,6 +47,7 @@ def detect(String baseRef) {
     def accountServiceChanged = false
     def auctionHouseChanged = false
     def discordBotChanged = false
+    def mcpGameServerChanged = false
     def unmatchedFiles = []
 
     for (file in changedFiles) {
@@ -77,6 +86,9 @@ def detect(String baseRef) {
             case 'discord-bot':
                 discordBotChanged = true
                 break
+            case 'mcp-game-server':
+                mcpGameServerChanged = true
+                break
             case 'wiki':
                 wikiChanged = true
                 break
@@ -98,7 +110,7 @@ def detect(String baseRef) {
         clientChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged} ==="
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, mcpGameServer=${mcpGameServerChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
@@ -106,6 +118,7 @@ def detect(String baseRef) {
             accountServiceChanged: accountServiceChanged,
             auctionHouseChanged: auctionHouseChanged,
             discordBotChanged: discordBotChanged,
+            mcpGameServerChanged: mcpGameServerChanged,
             changedFiles: changedFiles]
 }
 
@@ -113,7 +126,7 @@ def detect(String baseRef) {
  * Categorize a file path into a component.
  * @return 'server', 'client', 'shared', 'services-shared', 'auth',
  *         'account-service', 'auction-house', 'crash-reporting',
- *         'wiki', 'monitoring', 'docs', or 'unknown'
+ *         'mcp-game-server', 'wiki', 'monitoring', 'docs', or 'unknown'
  */
 def categorize(String filePath) {
     // Shared paths (trigger both server and client builds)
@@ -165,6 +178,10 @@ def categorize(String filePath) {
     // CrashReporting + MCP Server (deployed by MCDServices pipeline)
     if (filePath.startsWith('Src/CrashReporting/') || filePath.startsWith('Src/MCPServer/')) return 'crash-reporting'
     if (filePath.startsWith('Src/docker-compose.crash-reporting')) return 'crash-reporting'
+
+    // MCP Game Server (v1.1 Claude-as-player; local-only, no deploy pipeline).
+    // Distinct from Src/MCPServer/ above (the v1 MCP-for-crashes binary).
+    if (filePath.startsWith('Src/MCPGameServer/')) return 'mcp-game-server'
 
     // AccountService (per-environment app service)
     if (filePath.startsWith('Src/AccountService/')) return 'account-service'

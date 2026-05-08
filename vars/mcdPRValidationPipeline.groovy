@@ -146,6 +146,7 @@ def call(Map config) {
                         def changes = mcdChangeDetection.detect("refs/remotes/origin/${config.targetBranch}")
                         env.SERVER_CHANGED = changes.serverChanged.toString()
                         env.CLIENT_CHANGED = changes.clientChanged.toString()
+                        env.MCP_GAME_SERVER_CHANGED = changes.mcpGameServerChanged.toString()
 
                         def scope = ''
                         if (changes.serverChanged && changes.clientChanged) {
@@ -171,6 +172,32 @@ def call(Map config) {
                         export PATH="$(go env GOPATH)/bin:$PATH"
                         echo "Running lint on all Go modules..."
                         make lint
+                    '''
+                }
+            }
+
+            // Per-PR scan for the v1.1 playtest-bench Go binary
+            // (Src/MCPGameServer/cmd/playtest-bench/). Build + unit tests +
+            // golangci-lint on the bench package only. No API key required —
+            // the unit tests use mocked Claude SDK clients and mocked MCP-server
+            // subprocesses (TR-09 dry-run from ADR mc-ejzh §F11). Integration
+            // tests are guarded by //go:build integration and run in the
+            // nightly playtest-bench-integration stage instead. This is the
+            // v1.1 analogue of the v1 Src/MCPServer/ test job (mc-25t pattern).
+            stage('playtest-bench-unit') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.MCP_GAME_SERVER_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        echo "Installing golangci-lint..."
+                        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+                        export PATH="$(go env GOPATH)/bin:$PATH"
+                        cd Src/MCPGameServer
+                        echo "Building playtest-bench..."
+                        go build ./cmd/playtest-bench/...
+                        echo "Running playtest-bench unit tests..."
+                        go test -short ./cmd/playtest-bench/...
+                        echo "Linting playtest-bench..."
+                        golangci-lint run ./cmd/playtest-bench/...
                     '''
                 }
             }
