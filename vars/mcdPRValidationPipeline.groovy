@@ -146,17 +146,16 @@ def call(Map config) {
                         def changes = mcdChangeDetection.detect("refs/remotes/origin/${config.targetBranch}")
                         env.SERVER_CHANGED = changes.serverChanged.toString()
                         env.CLIENT_CHANGED = changes.clientChanged.toString()
+                        env.MCP_GAME_SERVER_CHANGED = changes.mcpGameServerChanged.toString()
 
-                        def scope = ''
-                        if (changes.serverChanged && changes.clientChanged) {
-                            scope = 'server + client'
-                        } else if (changes.serverChanged) {
-                            scope = 'server only'
-                        } else if (changes.clientChanged) {
-                            scope = 'client only'
-                        } else {
-                            scope = 'no builds needed'
-                        }
+                        def parts = []
+                        if (changes.serverChanged) parts << 'server'
+                        if (changes.clientChanged) parts << 'client'
+                        // Only call out MCP separately when it isn't already
+                        // implied by a 'server' build (the wire-drift gate via
+                        // Src/Include/ sets both flags).
+                        if (changes.mcpGameServerChanged && !changes.serverChanged) parts << 'mcp-game-server'
+                        def scope = parts ? parts.join(' + ') : 'no builds needed'
                         currentBuild.description += "\nBuilds: ${scope}"
                     }
                 }
@@ -361,6 +360,35 @@ def call(Map config) {
                 }
             }
 
+            stage('MCP Game Server Tests') {
+                // Hermetic Go test suite for the Claude-as-Player MCP harness.
+                // Unit tests cover protocol codec, session/legal-actions, tools,
+                // artifacts. Integration tests boot the MCP binary against an
+                // in-process FakeProxy (one server / one match per ADR mc-4bi.1
+                // §11.2) — no external Proxy/GameServer/AccountService stack.
+                //
+                // On failure the suite's dumpSessionLogOnFail helper prints
+                // mcp_session.log via t.Logf, which `go test -v` captures into
+                // mcp-test.log. That log is archived as the postmortem artifact
+                // (logs/{gameUUID}/ live in t.TempDir() and are cleaned by the
+                // test framework before this stage's post block runs).
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.MCP_GAME_SERVER_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        set -o pipefail
+                        mkdir -p reports/mcp-game-server
+                        cd Src/MCPGameServer
+                        go test -v ./... 2>&1 | tee ../../reports/mcp-game-server/unit.log
+                        go test -v -tags=integration ./integration_test/... 2>&1 | tee ../../reports/mcp-game-server/integration.log
+                    '''
+                }
+                post {
+                    failure {
+                        archiveArtifacts artifacts: 'reports/mcp-game-server/**', allowEmptyArchive: true, fingerprint: true
+                    }
+                }
+            }
+
             // Release PRs: full multi-platform MCDCoreExt build.
             // Linux Debug was already built above (for tests), so we only need
             // Linux Release + Windows + Android — all run in parallel.
@@ -497,6 +525,8 @@ def call(Map config) {
                         scope = ' (server only)'
                     } else if (env.CLIENT_CHANGED == 'true') {
                         scope = ' (client only)'
+                    } else if (env.MCP_GAME_SERVER_CHANGED == 'true') {
+                        scope = ' (mcp-game-server only)'
                     } else {
                         scope = ' (no builds needed)'
                     }
