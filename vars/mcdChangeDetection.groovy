@@ -241,6 +241,10 @@ def categorize(String filePath) {
     if (filePath.startsWith('Src/CrashReporting/') || filePath.startsWith('Src/MCPServer/')) return 'crash-reporting'
     if (filePath.startsWith('Src/docker-compose.crash-reporting')) return 'crash-reporting'
 
+    // MCP Game Server (v1.1 Claude-as-player; local-only, no deploy pipeline).
+    // Distinct from Src/MCPServer/ above (the v1 MCP-for-crashes binary).
+    if (filePath.startsWith('Src/MCPGameServer/')) return 'mcp-game-server'
+
     // AccountService (per-environment app service)
     if (filePath.startsWith('Src/AccountService/')) return 'account-service'
     if (filePath.startsWith('Src/docker-compose.account')) return 'account-service'
