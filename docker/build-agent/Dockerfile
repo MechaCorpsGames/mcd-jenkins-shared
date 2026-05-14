@@ -58,14 +58,21 @@ RUN curl -fsSL -o /tmp/godot.zip \
 # Godot needs a home directory for editor data even in headless mode
 RUN mkdir -p /home/jenkins/.local/share/godot /home/jenkins/.config/godot
 
-# ── Layer 5: Docker CLI + docker-compose + sentry-cli ─────────────────────────
+# ── Layer 5: Docker CLI + docker compose v2 + docker-compose v1 + sentry-cli ──
 RUN install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
         > /etc/apt/sources.list.d/docker.list && \
-    apt-get update && apt-get install -y --no-install-recommends docker-ce-cli && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get update && apt-get install -y --no-install-recommends \
+        docker-ce-cli \
+        docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
 
+# docker-compose v1 standalone binary kept for the legacy
+# `docker-compose -p ...` invocations in mcdAppServicesPipeline's existing
+# Deploy Auth/AccountService/AuctionHouse stages. New code should call
+# `docker compose ...` (v2 plugin installed above) — required by
+# scripts/docker_dev.py and the docker-smoke pytest suite.
 RUN curl -fsSL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-linux-x86_64" \
         -o /usr/local/bin/docker-compose && \
     chmod +x /usr/local/bin/docker-compose

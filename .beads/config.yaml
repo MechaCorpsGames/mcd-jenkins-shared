@@ -1,0 +1,7 @@
+issue_prefix: mjs
+issue-prefix: mjs
+dolt.auto-start: false
+gc.endpoint_origin: inherited_city
+gc.endpoint_status: verified
+export.auto: false
+types.custom: molecule,convoy,message,event,gate,merge-request,agent,role,rig,session,spec,convergence,step

@@ -9,14 +9,17 @@
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
  *         monitoringChanged, crashReportingChanged,
  *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
- *         mcpGameServerChanged,
+ *         dockerSmokeChanged, mcpGameServerChanged,
+ *         proxyChanged, sharedChanged, mcpServerChanged,
  *         changedFiles (list)
  *
- * mcpGameServerChanged tracks Src/MCPGameServer/ — the v1.1 Claude-as-player
- * stack (mc-ejzh). It is local-only; no deploy pipeline. It only gates the
- * per-PR playtest-bench-unit stage and the nightly playtest-bench-integration
- * stage. Distinct from the existing 'crash-reporting' route that handles
- * Src/MCPServer/ (the original v1 MCP-for-crashes binary).
+ * proxyChanged / sharedChanged / mcpServerChanged are computed via direct
+ * filePath prefix scans (not via categorize()) so the per-module Go test
+ * stage in mcdPRValidationPipeline can gate each Go module independently.
+ * They sit alongside the existing category-driven flags rather than
+ * replacing them — Src/Proxy/ still routes to 'server' for the server
+ * build pipeline; Src/MCPServer/ still routes to 'crash-reporting' for
+ * the bundled deploy in mcdServicesPipeline.
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -30,7 +33,9 @@ def detect(String baseRef) {
                 wikiChanged: true, monitoringChanged: true,
                 crashReportingChanged: true, accountServiceChanged: true,
                 auctionHouseChanged: true, discordBotChanged: true,
+                dockerSmokeChanged: true,
                 mcpGameServerChanged: true,
+                proxyChanged: true, sharedChanged: true, mcpServerChanged: true,
                 changedFiles: []]
     }
 
@@ -47,10 +52,24 @@ def detect(String baseRef) {
     def accountServiceChanged = false
     def auctionHouseChanged = false
     def discordBotChanged = false
+    def dockerSmokeChanged = false
     def mcpGameServerChanged = false
+    // Per-Go-module flags (independent of categorize(); see method doc)
+    def proxyChanged = false
+    def sharedChanged = false
+    def mcpServerChanged = false
     def unmatchedFiles = []
 
     for (file in changedFiles) {
+        // Per-Go-module signal: scan file paths directly so that the
+        // per-module Go test stage can run only the modules whose source
+        // tree actually changed. The Src/Shared/ propagation below mirrors
+        // the 'services-shared' switch case (Shared is consumed by every
+        // Go module).
+        if (file.startsWith('Src/Proxy/')) proxyChanged = true
+        if (file.startsWith('Src/Shared/')) sharedChanged = true
+        if (file.startsWith('Src/MCPServer/')) mcpServerChanged = true
+
         def category = categorize(file)
         switch (category) {
             case 'server':
@@ -60,8 +79,12 @@ def detect(String baseRef) {
                 clientChanged = true
                 break
             case 'shared':
+                // Src/Include/ + Src/External/ + Data/ touch the wire format
+                // (protocol_ext.h drift gate) so the MCP Game Server, which
+                // hand-ports the protocol, must rebuild + re-test on these.
                 serverChanged = true
                 clientChanged = true
+                mcpGameServerChanged = true
                 break
             case 'services-shared':
                 // Src/Shared/ affects Proxy (server) and all Go services
@@ -86,6 +109,10 @@ def detect(String baseRef) {
             case 'discord-bot':
                 discordBotChanged = true
                 break
+            case 'docker-smoke':
+                // Orchestrator + compose stack + tests/e2e smoke fixtures —
+                // mcdAppServicesPipeline's "Docker Smoke" stage gates on this.
+                dockerSmokeChanged = true
             case 'mcp-game-server':
                 mcpGameServerChanged = true
                 break
@@ -110,7 +137,17 @@ def detect(String baseRef) {
         clientChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, mcpGameServer=${mcpGameServerChanged} ==="
+    // Src/Shared/ is the Go shared library — every Go module imports from it,
+    // so a Shared change must trigger every per-module test. The category
+    // path 'services-shared' already wires Auth / AccountService / AuctionHouse
+    // / CrashReporting (and serverChanged, which gates the GameServer build);
+    // the per-module flags below cover Proxy and MCPServer to complete the set.
+    if (sharedChanged) {
+        proxyChanged = true
+        mcpServerChanged = true
+    }
+
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged}, mcpGameServer=${mcpGameServerChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
@@ -118,7 +155,11 @@ def detect(String baseRef) {
             accountServiceChanged: accountServiceChanged,
             auctionHouseChanged: auctionHouseChanged,
             discordBotChanged: discordBotChanged,
+            dockerSmokeChanged: dockerSmokeChanged,
             mcpGameServerChanged: mcpGameServerChanged,
+            proxyChanged: proxyChanged,
+            sharedChanged: sharedChanged,
+            mcpServerChanged: mcpServerChanged,
             changedFiles: changedFiles]
 }
 
@@ -126,9 +167,30 @@ def detect(String baseRef) {
  * Categorize a file path into a component.
  * @return 'server', 'client', 'shared', 'services-shared', 'auth',
  *         'account-service', 'auction-house', 'crash-reporting',
- *         'mcp-game-server', 'wiki', 'monitoring', 'docs', or 'unknown'
+ *         'docker-smoke', 'discord-bot', 'mcp-game-server',
+ *         'wiki', 'monitoring', 'docs', or 'unknown'
  */
 def categorize(String filePath) {
+    // docker-smoke orchestrator + compose stack + the smoke pytest suite.
+    // Matched BEFORE 'client' so paths like scripts/docker_dev.py and
+    // tests/e2e/test_docker_dev_smoke.py route here, not to the broad
+    // 'client' bucket — mcdAppServicesPipeline gates the docker-smoke
+    // stage on this flag.
+    def dockerSmokeExact = [
+        'scripts/docker_dev.py',
+        'tests/e2e/test_docker_dev_smoke.py',
+        'tests/e2e/conftest.py',
+        'tests/e2e/helpers.py',
+        'tests/e2e/test_assertions.py',
+        'tests/e2e/run_e2e.sh',
+        'tests/e2e/__init__.py',
+    ]
+    if (filePath in dockerSmokeExact) return 'docker-smoke'
+    // docker/ holds the compose stack (compose.yml, postgres-init.sql,
+    // images/*) — but NOT docker/build-agent/ which is mcd-jenkins-shared
+    // infrastructure that lives in this repo, not MCDClient.
+    if (filePath.startsWith('docker/') && !filePath.startsWith('docker/build-agent/')) return 'docker-smoke'
+
     // Shared paths (trigger both server and client builds)
     def sharedPrefixes = ['Src/Include/', 'Src/External/', 'Data/']
     for (prefix in sharedPrefixes) {
@@ -193,6 +255,10 @@ def categorize(String filePath) {
 
     // Discord bot (standalone systemd service on host)
     if (filePath.startsWith('Src/Tools/discord-bot/')) return 'discord-bot'
+
+    // MCP Game Server (Claude-as-Player MCP harness; Go module — see ADR mc-4bi.1).
+    // Local dev tool, not deployed; tests run in the server pipeline.
+    if (filePath.startsWith('Src/MCPGameServer/')) return 'mcp-game-server'
 
     // Documentation / tooling paths (no build needed)
     def docPrefixes = [
