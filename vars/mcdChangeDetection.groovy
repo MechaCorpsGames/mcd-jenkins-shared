@@ -9,7 +9,17 @@
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
  *         monitoringChanged, crashReportingChanged,
  *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
- *         dockerSmokeChanged, mcpGameServerChanged, changedFiles (list)
+ *         dockerSmokeChanged, mcpGameServerChanged,
+ *         proxyChanged, sharedChanged, mcpServerChanged,
+ *         changedFiles (list)
+ *
+ * proxyChanged / sharedChanged / mcpServerChanged are computed via direct
+ * filePath prefix scans (not via categorize()) so the per-module Go test
+ * stage in mcdPRValidationPipeline can gate each Go module independently.
+ * They sit alongside the existing category-driven flags rather than
+ * replacing them — Src/Proxy/ still routes to 'server' for the server
+ * build pipeline; Src/MCPServer/ still routes to 'crash-reporting' for
+ * the bundled deploy in mcdServicesPipeline.
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -25,6 +35,7 @@ def detect(String baseRef) {
                 auctionHouseChanged: true, discordBotChanged: true,
                 dockerSmokeChanged: true,
                 mcpGameServerChanged: true,
+                proxyChanged: true, sharedChanged: true, mcpServerChanged: true,
                 changedFiles: []]
     }
 
@@ -43,9 +54,22 @@ def detect(String baseRef) {
     def discordBotChanged = false
     def dockerSmokeChanged = false
     def mcpGameServerChanged = false
+    // Per-Go-module flags (independent of categorize(); see method doc)
+    def proxyChanged = false
+    def sharedChanged = false
+    def mcpServerChanged = false
     def unmatchedFiles = []
 
     for (file in changedFiles) {
+        // Per-Go-module signal: scan file paths directly so that the
+        // per-module Go test stage can run only the modules whose source
+        // tree actually changed. The Src/Shared/ propagation below mirrors
+        // the 'services-shared' switch case (Shared is consumed by every
+        // Go module).
+        if (file.startsWith('Src/Proxy/')) proxyChanged = true
+        if (file.startsWith('Src/Shared/')) sharedChanged = true
+        if (file.startsWith('Src/MCPServer/')) mcpServerChanged = true
+
         def category = categorize(file)
         switch (category) {
             case 'server':
@@ -113,8 +137,17 @@ def detect(String baseRef) {
         clientChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged} ==="
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, mcpGameServer=${mcpGameServerChanged} ==="
+    // Src/Shared/ is the Go shared library — every Go module imports from it,
+    // so a Shared change must trigger every per-module test. The category
+    // path 'services-shared' already wires Auth / AccountService / AuctionHouse
+    // / CrashReporting (and serverChanged, which gates the GameServer build);
+    // the per-module flags below cover Proxy and MCPServer to complete the set.
+    if (sharedChanged) {
+        proxyChanged = true
+        mcpServerChanged = true
+    }
+
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged}, mcpGameServer=${mcpGameServerChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
@@ -124,6 +157,9 @@ def detect(String baseRef) {
             discordBotChanged: discordBotChanged,
             dockerSmokeChanged: dockerSmokeChanged,
             mcpGameServerChanged: mcpGameServerChanged,
+            proxyChanged: proxyChanged,
+            sharedChanged: sharedChanged,
+            mcpServerChanged: mcpServerChanged,
             changedFiles: changedFiles]
 }
 

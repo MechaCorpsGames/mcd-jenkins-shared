@@ -147,6 +147,14 @@ def call(Map config) {
                         env.SERVER_CHANGED = changes.serverChanged.toString()
                         env.CLIENT_CHANGED = changes.clientChanged.toString()
                         env.MCP_GAME_SERVER_CHANGED = changes.mcpGameServerChanged.toString()
+                        // Per-Go-module flags drive the 'Per-module Go tests' stage.
+                        env.AUTH_CHANGED = changes.authChanged.toString()
+                        env.ACCOUNT_SERVICE_CHANGED = changes.accountServiceChanged.toString()
+                        env.AUCTION_HOUSE_CHANGED = changes.auctionHouseChanged.toString()
+                        env.PROXY_CHANGED = changes.proxyChanged.toString()
+                        env.SHARED_CHANGED = changes.sharedChanged.toString()
+                        env.CRASH_REPORTING_CHANGED = changes.crashReportingChanged.toString()
+                        env.MCP_SERVER_CHANGED = changes.mcpServerChanged.toString()
 
                         def parts = []
                         if (changes.serverChanged) parts << 'server'
@@ -174,6 +182,50 @@ def call(Map config) {
                         echo "Running lint on all Go modules..."
                         make lint
                     '''
+                }
+            }
+
+            // Per-module Go tests: runs `make test-go MODULE=<Name>` for each
+            // Go module whose source tree is in the PR diff, gated by the
+            // per-module flags emitted by `Detect Changes`. Sub-stage labels
+            // include the module name so a Jenkins UI failure points directly
+            // at the offending module (per architect audit §5/§8 P1).
+            //
+            // Make target is defined in MCDClient repo by sibling bead
+            // mc-eg0.1 (PR #1438 against features/backend). This stage and
+            // that PR must both merge for the gate to be effective; the
+            // jenkins-shared PR description spells out the merge order.
+            stage('Per-module Go tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                parallel {
+                    stage('test-go: Auth') {
+                        when { expression { env.AUTH_CHANGED == 'true' } }
+                        steps { sh 'make test-go MODULE=Auth' }
+                    }
+                    stage('test-go: AccountService') {
+                        when { expression { env.ACCOUNT_SERVICE_CHANGED == 'true' } }
+                        steps { sh 'make test-go MODULE=AccountService' }
+                    }
+                    stage('test-go: AuctionHouse') {
+                        when { expression { env.AUCTION_HOUSE_CHANGED == 'true' } }
+                        steps { sh 'make test-go MODULE=AuctionHouse' }
+                    }
+                    stage('test-go: Proxy') {
+                        when { expression { env.PROXY_CHANGED == 'true' } }
+                        steps { sh 'make test-go MODULE=Proxy' }
+                    }
+                    stage('test-go: Shared') {
+                        when { expression { env.SHARED_CHANGED == 'true' } }
+                        steps { sh 'make test-go MODULE=Shared' }
+                    }
+                    stage('test-go: CrashReporting') {
+                        when { expression { env.CRASH_REPORTING_CHANGED == 'true' } }
+                        steps { sh 'make test-go MODULE=CrashReporting' }
+                    }
+                    stage('test-go: MCPServer') {
+                        when { expression { env.MCP_SERVER_CHANGED == 'true' } }
+                        steps { sh 'make test-go MODULE=MCPServer' }
+                    }
                 }
             }
 
