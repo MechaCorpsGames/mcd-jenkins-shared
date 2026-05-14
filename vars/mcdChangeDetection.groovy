@@ -9,7 +9,7 @@
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
  *         monitoringChanged, crashReportingChanged,
  *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
- *         dockerSmokeChanged, changedFiles (list)
+ *         dockerSmokeChanged, mcpGameServerChanged, changedFiles (list)
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -24,6 +24,7 @@ def detect(String baseRef) {
                 crashReportingChanged: true, accountServiceChanged: true,
                 auctionHouseChanged: true, discordBotChanged: true,
                 dockerSmokeChanged: true,
+                mcpGameServerChanged: true,
                 changedFiles: []]
     }
 
@@ -41,6 +42,7 @@ def detect(String baseRef) {
     def auctionHouseChanged = false
     def discordBotChanged = false
     def dockerSmokeChanged = false
+    def mcpGameServerChanged = false
     def unmatchedFiles = []
 
     for (file in changedFiles) {
@@ -53,8 +55,12 @@ def detect(String baseRef) {
                 clientChanged = true
                 break
             case 'shared':
+                // Src/Include/ + Src/External/ + Data/ touch the wire format
+                // (protocol_ext.h drift gate) so the MCP Game Server, which
+                // hand-ports the protocol, must rebuild + re-test on these.
                 serverChanged = true
                 clientChanged = true
+                mcpGameServerChanged = true
                 break
             case 'services-shared':
                 // Src/Shared/ affects Proxy (server) and all Go services
@@ -83,6 +89,8 @@ def detect(String baseRef) {
                 // Orchestrator + compose stack + tests/e2e smoke fixtures —
                 // mcdAppServicesPipeline's "Docker Smoke" stage gates on this.
                 dockerSmokeChanged = true
+            case 'mcp-game-server':
+                mcpGameServerChanged = true
                 break
             case 'wiki':
                 wikiChanged = true
@@ -106,6 +114,7 @@ def detect(String baseRef) {
     }
 
     echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged} ==="
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, mcpGameServer=${mcpGameServerChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
@@ -114,6 +123,7 @@ def detect(String baseRef) {
             auctionHouseChanged: auctionHouseChanged,
             discordBotChanged: discordBotChanged,
             dockerSmokeChanged: dockerSmokeChanged,
+            mcpGameServerChanged: mcpGameServerChanged,
             changedFiles: changedFiles]
 }
 
@@ -121,7 +131,8 @@ def detect(String baseRef) {
  * Categorize a file path into a component.
  * @return 'server', 'client', 'shared', 'services-shared', 'auth',
  *         'account-service', 'auction-house', 'crash-reporting',
- *         'docker-smoke', 'wiki', 'monitoring', 'docs', or 'unknown'
+ *         'docker-smoke', 'discord-bot', 'mcp-game-server',
+ *         'wiki', 'monitoring', 'docs', or 'unknown'
  */
 def categorize(String filePath) {
     // docker-smoke orchestrator + compose stack + the smoke pytest suite.
@@ -204,6 +215,10 @@ def categorize(String filePath) {
 
     // Discord bot (standalone systemd service on host)
     if (filePath.startsWith('Src/Tools/discord-bot/')) return 'discord-bot'
+
+    // MCP Game Server (Claude-as-Player MCP harness; Go module — see ADR mc-4bi.1).
+    // Local dev tool, not deployed; tests run in the server pipeline.
+    if (filePath.startsWith('Src/MCPGameServer/')) return 'mcp-game-server'
 
     // Documentation / tooling paths (no build needed)
     def docPrefixes = [
