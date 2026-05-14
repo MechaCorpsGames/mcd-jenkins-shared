@@ -9,7 +9,7 @@
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
  *         monitoringChanged, crashReportingChanged,
  *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
- *         mcpGameServerChanged, changedFiles (list)
+ *         dockerSmokeChanged, mcpGameServerChanged, changedFiles (list)
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -23,6 +23,7 @@ def detect(String baseRef) {
                 wikiChanged: true, monitoringChanged: true,
                 crashReportingChanged: true, accountServiceChanged: true,
                 auctionHouseChanged: true, discordBotChanged: true,
+                dockerSmokeChanged: true,
                 mcpGameServerChanged: true,
                 changedFiles: []]
     }
@@ -40,6 +41,7 @@ def detect(String baseRef) {
     def accountServiceChanged = false
     def auctionHouseChanged = false
     def discordBotChanged = false
+    def dockerSmokeChanged = false
     def mcpGameServerChanged = false
     def unmatchedFiles = []
 
@@ -83,6 +85,10 @@ def detect(String baseRef) {
             case 'discord-bot':
                 discordBotChanged = true
                 break
+            case 'docker-smoke':
+                // Orchestrator + compose stack + tests/e2e smoke fixtures —
+                // mcdAppServicesPipeline's "Docker Smoke" stage gates on this.
+                dockerSmokeChanged = true
             case 'mcp-game-server':
                 mcpGameServerChanged = true
                 break
@@ -107,6 +113,7 @@ def detect(String baseRef) {
         clientChanged = true
     }
 
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged} ==="
     echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, mcpGameServer=${mcpGameServerChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
@@ -115,6 +122,7 @@ def detect(String baseRef) {
             accountServiceChanged: accountServiceChanged,
             auctionHouseChanged: auctionHouseChanged,
             discordBotChanged: discordBotChanged,
+            dockerSmokeChanged: dockerSmokeChanged,
             mcpGameServerChanged: mcpGameServerChanged,
             changedFiles: changedFiles]
 }
@@ -123,10 +131,30 @@ def detect(String baseRef) {
  * Categorize a file path into a component.
  * @return 'server', 'client', 'shared', 'services-shared', 'auth',
  *         'account-service', 'auction-house', 'crash-reporting',
- *         'discord-bot', 'mcp-game-server',
+ *         'docker-smoke', 'discord-bot', 'mcp-game-server',
  *         'wiki', 'monitoring', 'docs', or 'unknown'
  */
 def categorize(String filePath) {
+    // docker-smoke orchestrator + compose stack + the smoke pytest suite.
+    // Matched BEFORE 'client' so paths like scripts/docker_dev.py and
+    // tests/e2e/test_docker_dev_smoke.py route here, not to the broad
+    // 'client' bucket — mcdAppServicesPipeline gates the docker-smoke
+    // stage on this flag.
+    def dockerSmokeExact = [
+        'scripts/docker_dev.py',
+        'tests/e2e/test_docker_dev_smoke.py',
+        'tests/e2e/conftest.py',
+        'tests/e2e/helpers.py',
+        'tests/e2e/test_assertions.py',
+        'tests/e2e/run_e2e.sh',
+        'tests/e2e/__init__.py',
+    ]
+    if (filePath in dockerSmokeExact) return 'docker-smoke'
+    // docker/ holds the compose stack (compose.yml, postgres-init.sql,
+    // images/*) — but NOT docker/build-agent/ which is mcd-jenkins-shared
+    // infrastructure that lives in this repo, not MCDClient.
+    if (filePath.startsWith('docker/') && !filePath.startsWith('docker/build-agent/')) return 'docker-smoke'
+
     // Shared paths (trigger both server and client builds)
     def sharedPrefixes = ['Src/Include/', 'Src/External/', 'Data/']
     for (prefix in sharedPrefixes) {
