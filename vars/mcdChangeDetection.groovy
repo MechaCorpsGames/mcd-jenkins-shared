@@ -9,6 +9,7 @@
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
  *         monitoringChanged, crashReportingChanged,
  *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
+ *         dockerSmokeChanged, mcpGameServerChanged,
  *         proxyChanged, sharedChanged, mcpServerChanged,
  *         changedFiles (list)
  *
@@ -32,6 +33,8 @@ def detect(String baseRef) {
                 wikiChanged: true, monitoringChanged: true,
                 crashReportingChanged: true, accountServiceChanged: true,
                 auctionHouseChanged: true, discordBotChanged: true,
+                dockerSmokeChanged: true,
+                mcpGameServerChanged: true,
                 proxyChanged: true, sharedChanged: true, mcpServerChanged: true,
                 changedFiles: []]
     }
@@ -49,6 +52,8 @@ def detect(String baseRef) {
     def accountServiceChanged = false
     def auctionHouseChanged = false
     def discordBotChanged = false
+    def dockerSmokeChanged = false
+    def mcpGameServerChanged = false
     // Per-Go-module flags (independent of categorize(); see method doc)
     def proxyChanged = false
     def sharedChanged = false
@@ -74,8 +79,12 @@ def detect(String baseRef) {
                 clientChanged = true
                 break
             case 'shared':
+                // Src/Include/ + Src/External/ + Data/ touch the wire format
+                // (protocol_ext.h drift gate) so the MCP Game Server, which
+                // hand-ports the protocol, must rebuild + re-test on these.
                 serverChanged = true
                 clientChanged = true
+                mcpGameServerChanged = true
                 break
             case 'services-shared':
                 // Src/Shared/ affects Proxy (server) and all Go services
@@ -99,6 +108,13 @@ def detect(String baseRef) {
                 break
             case 'discord-bot':
                 discordBotChanged = true
+                break
+            case 'docker-smoke':
+                // Orchestrator + compose stack + tests/e2e smoke fixtures —
+                // mcdAppServicesPipeline's "Docker Smoke" stage gates on this.
+                dockerSmokeChanged = true
+            case 'mcp-game-server':
+                mcpGameServerChanged = true
                 break
             case 'wiki':
                 wikiChanged = true
@@ -131,7 +147,7 @@ def detect(String baseRef) {
         mcpServerChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged} ==="
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged}, mcpGameServer=${mcpGameServerChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
@@ -139,6 +155,8 @@ def detect(String baseRef) {
             accountServiceChanged: accountServiceChanged,
             auctionHouseChanged: auctionHouseChanged,
             discordBotChanged: discordBotChanged,
+            dockerSmokeChanged: dockerSmokeChanged,
+            mcpGameServerChanged: mcpGameServerChanged,
             proxyChanged: proxyChanged,
             sharedChanged: sharedChanged,
             mcpServerChanged: mcpServerChanged,
@@ -149,9 +167,30 @@ def detect(String baseRef) {
  * Categorize a file path into a component.
  * @return 'server', 'client', 'shared', 'services-shared', 'auth',
  *         'account-service', 'auction-house', 'crash-reporting',
+ *         'docker-smoke', 'discord-bot', 'mcp-game-server',
  *         'wiki', 'monitoring', 'docs', or 'unknown'
  */
 def categorize(String filePath) {
+    // docker-smoke orchestrator + compose stack + the smoke pytest suite.
+    // Matched BEFORE 'client' so paths like scripts/docker_dev.py and
+    // tests/e2e/test_docker_dev_smoke.py route here, not to the broad
+    // 'client' bucket — mcdAppServicesPipeline gates the docker-smoke
+    // stage on this flag.
+    def dockerSmokeExact = [
+        'scripts/docker_dev.py',
+        'tests/e2e/test_docker_dev_smoke.py',
+        'tests/e2e/conftest.py',
+        'tests/e2e/helpers.py',
+        'tests/e2e/test_assertions.py',
+        'tests/e2e/run_e2e.sh',
+        'tests/e2e/__init__.py',
+    ]
+    if (filePath in dockerSmokeExact) return 'docker-smoke'
+    // docker/ holds the compose stack (compose.yml, postgres-init.sql,
+    // images/*) — but NOT docker/build-agent/ which is mcd-jenkins-shared
+    // infrastructure that lives in this repo, not MCDClient.
+    if (filePath.startsWith('docker/') && !filePath.startsWith('docker/build-agent/')) return 'docker-smoke'
+
     // Shared paths (trigger both server and client builds)
     def sharedPrefixes = ['Src/Include/', 'Src/External/', 'Data/']
     for (prefix in sharedPrefixes) {
@@ -212,6 +251,10 @@ def categorize(String filePath) {
 
     // Discord bot (standalone systemd service on host)
     if (filePath.startsWith('Src/Tools/discord-bot/')) return 'discord-bot'
+
+    // MCP Game Server (Claude-as-Player MCP harness; Go module — see ADR mc-4bi.1).
+    // Local dev tool, not deployed; tests run in the server pipeline.
+    if (filePath.startsWith('Src/MCPGameServer/')) return 'mcp-game-server'
 
     // Documentation / tooling paths (no build needed)
     def docPrefixes = [

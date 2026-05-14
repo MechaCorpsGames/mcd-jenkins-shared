@@ -146,6 +146,7 @@ def call(Map config) {
                         def changes = mcdChangeDetection.detect("refs/remotes/origin/${config.targetBranch}")
                         env.SERVER_CHANGED = changes.serverChanged.toString()
                         env.CLIENT_CHANGED = changes.clientChanged.toString()
+                        env.MCP_GAME_SERVER_CHANGED = changes.mcpGameServerChanged.toString()
                         // Per-Go-module flags drive the 'Per-module Go tests' stage.
                         env.AUTH_CHANGED = changes.authChanged.toString()
                         env.ACCOUNT_SERVICE_CHANGED = changes.accountServiceChanged.toString()
@@ -155,16 +156,14 @@ def call(Map config) {
                         env.CRASH_REPORTING_CHANGED = changes.crashReportingChanged.toString()
                         env.MCP_SERVER_CHANGED = changes.mcpServerChanged.toString()
 
-                        def scope = ''
-                        if (changes.serverChanged && changes.clientChanged) {
-                            scope = 'server + client'
-                        } else if (changes.serverChanged) {
-                            scope = 'server only'
-                        } else if (changes.clientChanged) {
-                            scope = 'client only'
-                        } else {
-                            scope = 'no builds needed'
-                        }
+                        def parts = []
+                        if (changes.serverChanged) parts << 'server'
+                        if (changes.clientChanged) parts << 'client'
+                        // Only call out MCP separately when it isn't already
+                        // implied by a 'server' build (the wire-drift gate via
+                        // Src/Include/ sets both flags).
+                        if (changes.mcpGameServerChanged && !changes.serverChanged) parts << 'mcp-game-server'
+                        def scope = parts ? parts.join(' + ') : 'no builds needed'
                         currentBuild.description += "\nBuilds: ${scope}"
                     }
                 }
@@ -175,7 +174,10 @@ def call(Map config) {
                 steps {
                     sh '''
                         echo "Installing golangci-lint..."
-                        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+                        # Pinned (mc-qhu): unpinned @latest broke unrelated PRs whenever
+                        # upstream released a new linter set. Bump deliberately in a
+                        # follow-up PR after triaging any new findings.
+                        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.0
                         export PATH="$(go env GOPATH)/bin:$PATH"
                         echo "Running lint on all Go modules..."
                         make lint
@@ -282,6 +284,33 @@ def call(Map config) {
                         script {
                             try {
                                 junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'reports/**/results.xml'
+                            } catch (NoSuchMethodError e) {
+                                echo "JUnit plugin not installed — skipping test report publishing"
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Card-validator addon ships its own bespoke runner under
+            // addons/card_validator/tests/ (predates GdUnit4 in this addon).
+            // `make test-validator` invokes the headless runner and writes
+            // JUnit XML to test-results/card_validator_junit.xml.
+            // Gated on CLIENT_CHANGED to match GDScript Tests above; addons/**
+            // already routes to the 'client' category in mcdChangeDetection.
+            stage('Card Validator Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        rm -rf test-results/card_validator_junit.xml
+                        make test-validator
+                    '''
+                }
+                post {
+                    always {
+                        script {
+                            try {
+                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'test-results/card_validator_junit.xml'
                             } catch (NoSuchMethodError e) {
                                 echo "JUnit plugin not installed — skipping test report publishing"
                             }
@@ -409,6 +438,35 @@ def call(Map config) {
                         if (testResult != 0) {
                             error("Integration test failed")
                         }
+                    }
+                }
+            }
+
+            stage('MCP Game Server Tests') {
+                // Hermetic Go test suite for the Claude-as-Player MCP harness.
+                // Unit tests cover protocol codec, session/legal-actions, tools,
+                // artifacts. Integration tests boot the MCP binary against an
+                // in-process FakeProxy (one server / one match per ADR mc-4bi.1
+                // §11.2) — no external Proxy/GameServer/AccountService stack.
+                //
+                // On failure the suite's dumpSessionLogOnFail helper prints
+                // mcp_session.log via t.Logf, which `go test -v` captures into
+                // mcp-test.log. That log is archived as the postmortem artifact
+                // (logs/{gameUUID}/ live in t.TempDir() and are cleaned by the
+                // test framework before this stage's post block runs).
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.MCP_GAME_SERVER_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        set -o pipefail
+                        mkdir -p reports/mcp-game-server
+                        cd Src/MCPGameServer
+                        go test -v ./... 2>&1 | tee ../../reports/mcp-game-server/unit.log
+                        go test -v -tags=integration ./integration_test/... 2>&1 | tee ../../reports/mcp-game-server/integration.log
+                    '''
+                }
+                post {
+                    failure {
+                        archiveArtifacts artifacts: 'reports/mcp-game-server/**', allowEmptyArchive: true, fingerprint: true
                     }
                 }
             }
@@ -549,6 +607,8 @@ def call(Map config) {
                         scope = ' (server only)'
                     } else if (env.CLIENT_CHANGED == 'true') {
                         scope = ' (client only)'
+                    } else if (env.MCP_GAME_SERVER_CHANGED == 'true') {
+                        scope = ' (mcp-game-server only)'
                     } else {
                         scope = ' (no builds needed)'
                     }
