@@ -161,6 +161,19 @@ def call(Map config) {
                 }
             }
 
+            stage('Build WASM Bots') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
+                steps {
+                    // bots/*.wasm are the artifacts the proxy loads via
+                    // --bot-dir. `make wasm-bots-nix` wraps `nix develop -c
+                    // make wasm-bots`, so the Rust/clang/lld/nodejs toolchain
+                    // comes from the flake instead of requiring the build
+                    // agent image to ship it. First cold run pulls flake
+                    // inputs; cached thereafter.
+                    sh 'make wasm-bots-nix'
+                }
+            }
+
             stage('Verify Build') {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
@@ -396,6 +409,21 @@ EOF
                         rsync -rlvz --no-group bin/testclient-versions/ ${config.deployPath}/testclient-versions/
                         echo "✓ Deployed GameServer to ${config.environment}: \$(cat ${config.deployPath}/versions/latest.txt)"
                         echo "✓ Deployed TestClient to ${config.environment}: \$(cat ${config.deployPath}/testclient-versions/latest.txt)"
+                    """
+                }
+            }
+
+            stage('Deploy Bots') {
+                // Must land before the proxy container restart so docker-
+                // compose mounts a populated ${deployPath}/bots:/app/bots.
+                // --delete so an old .wasm removed from the repo doesn't
+                // linger on the host and shadow the new manifest.
+                when { expression { env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh """
+                        mkdir -p ${config.deployPath}/bots
+                        rsync -rlvz --no-group --delete bots/ ${config.deployPath}/bots/
+                        echo "✓ Deployed bots to ${config.environment}: \$(ls ${config.deployPath}/bots/*.wasm 2>/dev/null | wc -l) wasm bots"
                     """
                 }
             }
