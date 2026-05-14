@@ -21,7 +21,7 @@ def call(Map config) {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /var/lib/jenkins/.local/share/godot/export_templates:/home/jenkins/.local/share/godot/export_templates:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995'
+                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /var/lib/jenkins/.local/share/godot/export_templates:/home/jenkins/.local/share/godot/export_templates:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995 --group-add 1000'
             }
         }
 
@@ -175,6 +175,25 @@ def call(Map config) {
                 }
             }
 
+            // Case-strict scan for res:// references in committed resources.
+            // Fails the PR if a tscn/tres/cfg/gd reference points at a path
+            // whose casing doesn't match the filesystem — a regression that
+            // previously only surfaced on Linux headless bots (PR #1036
+            // SIGSEGV postmortem). Pure Python, no deps; runs before any
+            // build so it fails fast.
+            stage('Resource Path Case Check') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        if [ -f scripts/check_res_path_case.py ]; then
+                            make check-res-case
+                        else
+                            echo "scripts/check_res_path_case.py not present on this branch, skipping"
+                        fi
+                    '''
+                }
+            }
+
             stage('Setup Dependencies') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
                 steps {
@@ -252,6 +271,13 @@ def call(Map config) {
                         cd Src/GameServer
                         ./build.sh --test --release
                     """
+                }
+            }
+
+            stage('Proxy Unit Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh 'make test-proxy'
                 }
             }
 

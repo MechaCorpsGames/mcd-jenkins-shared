@@ -13,7 +13,7 @@ def call(Map config) {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995'
+                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995 --group-add 1000'
             }
         }
 
@@ -145,7 +145,7 @@ def call(Map config) {
                                     PORT="\${SVC##*:}"
                                     OK=false
                                     for i in \$(seq 1 10); do
-                                        RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:\$PORT/health)
+                                        RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:\$PORT/health || true)
                                         if [ "\$RESULT" = "200" ]; then
                                             echo "✓ \$NAME health check passed"
                                             OK=true
@@ -208,7 +208,7 @@ def call(Map config) {
 
                                 OK=false
                                 for i in \$(seq 1 10); do
-                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9090/-/ready)
+                                    RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9090/-/ready || true)
                                     if [ "\$RESULT" = "200" ]; then
                                         echo "✓ Prometheus is ready"
                                         OK=true

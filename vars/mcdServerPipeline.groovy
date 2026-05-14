@@ -17,7 +17,7 @@ def call(Map config) {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995'
+                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995 --group-add 1000'
             }
         }
 
@@ -123,17 +123,14 @@ def call(Map config) {
                         if (!baseRef || baseRef.startsWith('0000000')) {
                             echo "No valid before SHA — building everything"
                             env.SERVER_CHANGED = 'true'
-                            env.ECONOMY_TESTS_NEEDED = 'true'
                         } else {
                             // Ensure the before SHA is available locally
                             sh "git fetch origin ${baseRef} 2>/dev/null || true"
                             def changes = mcdChangeDetection.detect(baseRef)
                             env.SERVER_CHANGED = changes.serverChanged.toString()
-                            // Economy tests cover Auth, AccountService, AuctionHouse
-                            env.ECONOMY_TESTS_NEEDED = (changes.serverChanged || changes.authChanged || changes.accountServiceChanged || changes.auctionHouseChanged).toString()
                         }
 
-                        if (env.SERVER_CHANGED != 'true' && env.ECONOMY_TESTS_NEEDED != 'true') {
+                        if (env.SERVER_CHANGED != 'true') {
                             currentBuild.description += "\n⏭️ No server changes — skipped"
                             currentBuild.result = 'NOT_BUILT'
                         }
@@ -193,19 +190,10 @@ def call(Map config) {
                 }
             }
 
-            stage('Economy Service Tests') {
-                when { expression { env.ECONOMY_TESTS_NEEDED == 'true' } }
+            stage('Proxy Unit Tests') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
-                    sh '''
-                        unset GOROOT
-                        nix develop . --command bash -c '
-                            dev-pg.sh init && dev-pg.sh start || exit 1
-                            trap "dev-pg.sh stop" EXIT
-                            cd Src/Auth && go test ./... &&
-                            cd ../AccountService && go test ./... &&
-                            cd ../AuctionHouse && go test ./...
-                        '
-                    '''
+                    sh 'make test-proxy'
                 }
             }
 
@@ -335,14 +323,23 @@ EOF
                         if (sentryCliExists) {
                             sh """
                                 export SENTRY_AUTH_TOKEN=\$(grep SENTRY_TOKEN /var/opt/mechacorpsgames/Src/.env.sentry | cut -d= -f2)
+                                echo "Uploading server debug symbols to Sentry..."
                                 sentry-cli --url https://us.sentry.io \
                                     upload-dif --org mechacorps-llc --project mcd-server \
+                                    --include-sources \
                                     bin/versions/ \
-                                    Src/GameServer/build/ \
+                                    Src/GameServer/build/Release/ \
                                     || echo "⚠️ Symbol upload failed (non-fatal)"
+
+                                echo "Verifying uploaded symbols..."
+                                sentry-cli --url https://us.sentry.io \
+                                    debug-files check \
+                                    --org mechacorps-llc --project mcd-server \
+                                    bin/versions/${SERVER_VERSION_PATH} \
+                                    || echo "⚠️ Symbol verification failed (non-fatal)"
                             """
                         } else {
-                            echo "sentry-cli not installed, skipping symbol upload"
+                            echo "⚠️ sentry-cli not installed — debug symbols NOT uploaded. Install sentry-cli in the build agent to enable crash symbolication."
                         }
                     }
                 }
@@ -410,10 +407,23 @@ EOF
                         def envFile = config.proxyEnvFile ?: '.env.proxy'
                         def composeProject = config.proxyProject ?: 'src'
                         def basePort = config.tcpPort - 69  // e.g., 42069 -> 42000
+                        // Per-env CI-managed Godot project for practice-match bots.
+                        // Populated by mcdClientPipeline's "Publish Bot Runtime"
+                        // stage; the proxy mounts this path read-only.
+                        def botProjectPath = config.botProjectPath ?: "${config.deployPath}/godot-bot-project"
 
-                        // Generate proxy env file from pipeline config — no pre-seeded files needed.
-                        // Secrets (AUTH_INTERNAL_KEY, CRASH_REPORTING_API_KEY) default to empty;
-                        // docker-compose.proxy.yml handles empty values gracefully.
+                        // Generate proxy env file from pipeline config.
+                        // Read Account Service API key from its env file so the proxy
+                        // can fetch decks via the internal API.
+                        def envSuffix = envFile.replace('.env.proxy.', '').replace('.env.proxy', 'main')
+                        def accountEnvFile = ".env.account.${envSuffix}"
+                        def accountApiKey = config.accountApiKey ?: ''
+                        if (!accountApiKey) {
+                            accountApiKey = sh(
+                                script: "grep '^INTERNAL_API_KEY=' /var/opt/mechacorpsgames/Src/${accountEnvFile} 2>/dev/null | cut -d= -f2 || echo ''",
+                                returnStdout: true
+                            ).trim()
+                        }
                         sh """
                             cat > /var/opt/mechacorpsgames/Src/${envFile} <<'ENVEOF'
 # Auto-generated by mcdServerPipeline — do not edit manually
@@ -421,11 +431,17 @@ PROXY_TCP_PORT=${config.tcpPort}
 PROXY_WS_PORT=${config.wsPort ?: config.tcpPort + 1}
 PROXY_BASE_PORT=${basePort}
 DEPLOY_PATH=${config.deployPath}
+BOT_PROJECT_ROOT=${botProjectPath}
 SERVER_SENTRY_DSN=${config.sentryDsn ?: ''}
 CRASH_REPORT_URL=${config.crashReportUrl ?: "http://localhost:${basePort + 90}"}
-AUTH_URL=${config.authUrl ?: 'https://auth.mechacorpsgames.com'}
-AUTH_INTERNAL_KEY=${config.authInternalKey ?: ''}
+AUTH_URL=${config.authUrl ?: "http://localhost:${basePort + 81}"}
+AUTH_INTERNAL_KEY=${accountApiKey}
+ACCOUNT_URL=${config.accountUrl ?: "http://localhost:${basePort + 82}"}
+ACCOUNT_API_KEY=${accountApiKey}
 CRASH_REPORTING_API_KEY=${config.crashReportKey ?: ''}
+BOT_WS_PORT=${config.botWsPort ?: basePort + 71}
+BOT_ACCOUNT=${config.botAccount ?: ''}
+BOT_PASSWORD=${config.botPassword ?: ''}
 ENVEOF
                         """
                         def containerName = "${composeProject}_proxy_1"

@@ -31,7 +31,7 @@ def call(Map config) {
             )
             choice(
                 name: 'STEAM_BRANCH',
-                choices: ['dev', 'alpha'],
+                choices: ['main', 'alpha'],
                 description: 'Steam branch to set the build live on'
             )
         }

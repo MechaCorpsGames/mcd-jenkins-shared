@@ -13,12 +13,21 @@ def call(Map config) {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /var/lib/jenkins/.local/share/godot/export_templates:/home/jenkins/.local/share/godot/export_templates:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995'
+                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /var/lib/jenkins/.android:/var/lib/jenkins/.android:ro -v /var/lib/jenkins/.local/share/godot/export_templates:/home/jenkins/.local/share/godot/export_templates:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995 --group-add 1000'
             }
         }
 
         options {
             buildDiscarder(logRotator(numToKeepStr: '10', artifactDaysToKeepStr: '7', artifactNumToKeepStr: '10'))
+            // Serialize MCDClient-* builds so concurrent runs can't race on
+            // the per-env bot-runtime deploy path (the Publish Bot Runtime
+            // rsync --delete blew up on `.core.XYZ` temp files under the
+            // MCDClient-FeatureBackend 21:01 burst). Lockable Resources
+            // plugin isn't installed here (confirmed by #64's DSL error
+            // listing valid steps — `lock` is absent), so we fall back to
+            // pipeline-level serialization. Waiting 10–15 min in a bad
+            // burst is better than a silent rsync race.
+            disableConcurrentBuilds()
         }
 
         environment {
@@ -31,9 +40,11 @@ def call(Map config) {
             GODOT_ANDROID_KEYSTORE_DEBUG_PATH = "/var/lib/jenkins/.android/debug.keystore"
             GODOT_ANDROID_KEYSTORE_DEBUG_USER = "androiddebugkey"
             GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD = "android"
-            GODOT_ANDROID_KEYSTORE_RELEASE_PATH = "/var/lib/jenkins/.android/debug.keystore"
-            GODOT_ANDROID_KEYSTORE_RELEASE_USER = "androiddebugkey"
-            GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD = "android"
+            // Release keystore is bound lazily via withCredentials around the
+            // Android release build + export stages (see below). Doing it here
+            // with credentials() in the environment block would abort every
+            // client build before entering the node when the credentials are
+            // missing — even Linux/Windows-only work would break.
             BRANCH_NAME = "${config.branch}"
             BRANCH_SAFE = "${config.branch.replaceAll('/', '-')}"
             DEPLOY_ENV = "${config.environment}"
@@ -166,6 +177,64 @@ def call(Map config) {
                 }
             }
 
+            // The practice-match bot is a headless Godot instance the proxy
+            // spawns from /app/project (see Src/docker-compose.proxy.yml).
+            // We publish a coherent snapshot of the GDScript project plus the
+            // freshly built Linux Debug MCDCoreExt to a per-env deploy path
+            // so bot GDScript and the GDExtension .so never drift apart.
+            //
+            // Without this stage the proxy falls back to mounting the shared
+            // dev checkout at /var/opt/mechacorpsgames, which only gets
+            // rebuilt when a human runs build.sh by hand — any BuildInfo
+            // method added in GDScript parses as "Identifier not declared"
+            // until someone does that rebuild.
+            //
+            // Serialize writes to the per-env bot-runtime deploy path.
+            // Without this lock, concurrent builds (e.g. a burst of merges to
+            // features/backend) both rsync into the same
+            // ${config.botProjectPath} with --delete, and the mid-transfer
+            // temp files (e.g. `.core.XYZ`) vanish as the other build's
+            // delete pass sweeps them — rsync exits 23 and every downstream
+            // stage cascades to FAILED.
+            //
+            // MCDClient-FeatureBackend #57 was the poster child: five merges
+            // landed in 15 minutes, #55 and #57 ran concurrently in
+            // workspace@N dirs, both targeting /opt/mechacorps/feature-backend
+            // /godot-bot-project, #57's rsync hit the race and failed.
+            stage('Publish Bot Runtime') {
+                when {
+                    expression {
+                        env.CLIENT_CHANGED == 'true' && config.botProjectPath
+                    }
+                }
+                steps {
+                    script { env.BUILD_PHASE = 'Publish Bot Runtime' }
+                    sh """
+                        mkdir -p ${config.botProjectPath}
+                        # Re-import so .godot/extension_list.cfg reflects the
+                        # just-built MCDCoreExt. Without this the headless bot
+                        # fails parse with "Identifier BuildInfo not declared"
+                        # because Godot does not auto-load extensions that are
+                        # not registered in the cache.
+                        godot --headless --import 2>/dev/null || true
+                        # .godot/ IS included so the deploy path ships with a
+                        # usable extension_list.cfg and imported asset cache.
+                        # Source build dirs and extern/ are not needed at
+                        # runtime (only the installed bin/ .so matters).
+                        rsync -a --delete \
+                            --exclude='.git/' \
+                            --exclude='reports/' \
+                            --exclude='Src/*/build*/' \
+                            --exclude='Src/*/extern/' \
+                            --exclude='Src/MCDCoreExt/build-win/' \
+                            --exclude='Src/MCDCoreExt/build-windows/' \
+                            --exclude='Src/MCDCoreExt/build-android/' \
+                            ./ ${config.botProjectPath}/
+                        echo "✓ Published bot runtime to ${config.botProjectPath} (\$(cd ${config.botProjectPath} && stat -c %y bin/lib/Linux-x86_64/libMCDCoreExt-d.so 2>/dev/null))"
+                    """
+                }
+            }
+
             // After Linux Debug, run tests + remaining builds in parallel.
             // Each platform uses a separate build directory so there are no conflicts.
             stage('Cross-platform Builds & Tests') {
@@ -282,6 +351,16 @@ def call(Map config) {
                                     """
                                 }
                             }
+
+                            stage('MCDCoreExt Android armeabi-v7a Release') {
+                                steps {
+                                    script { env.BUILD_PHASE = 'MCDCoreExt Android armeabi-v7a Release' }
+                                    sh """
+                                        cd Src/MCDCoreExt
+                                        ./build.sh --clean --configure --build --install --release --android armeabi-v7a --server-url ${SERVER_URL} --build-number ${BUILD_NUMBER} --branch ${BRANCH_NAME}
+                                    """
+                                }
+                            }
                         }
                     }
                 }
@@ -318,6 +397,8 @@ def call(Map config) {
                             echo "✓ Android arm64-v8a debug build"
                             test -f bin/lib/Android-arm64-v8a/libMCDCoreExt.so
                             echo "✓ Android arm64-v8a release build"
+                            test -f bin/lib/Android-armeabi-v7a/libMCDCoreExt.so
+                            echo "✓ Android armeabi-v7a release build"
 
                             echo ""
                             echo "All builds verified successfully!"
@@ -337,9 +418,37 @@ def call(Map config) {
             stage('Export Game Executables') {
                 when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
-                    script { env.BUILD_PHASE = 'Export Game Executables' }
+                    script {
+                        env.BUILD_PHASE = 'Export Game Executables'
+
+                        // Detect whether the Play Store upload keystore is available.
+                        // If not, skip the Android AAB export entirely — we still
+                        // ship Linux + Windows builds, and the pipeline stays green
+                        // so non-Android work isn't held hostage to Play credentials.
+                        env.HAS_UPLOAD_KEYSTORE = 'false'
+                        try {
+                            withCredentials([
+                                file(credentialsId: 'android-upload-keystore', variable: '_KS_PROBE')
+                            ]) {
+                                env.HAS_UPLOAD_KEYSTORE = 'true'
+                            }
+                        } catch (err) {
+                            echo "⚠️  Upload keystore credentials not configured — skipping Android AAB export."
+                            echo "    To enable: create Jenkins credentials android-upload-keystore (Secret file),"
+                            echo "    android-upload-keystore-password (Secret text), android-upload-keystore-alias (Secret text)."
+                            echo "    See docs/play-store/README.md in the client repo."
+                        }
+                    }
+
                     sh """
                         mkdir -p exports
+
+                        # Inject monotonic version code + human-readable version name
+                        # into the Android preset so Play Store won't reject duplicate uploads.
+                        # Play requires versionCode to be a strictly-increasing integer.
+                        sed -i "s|^version/code=.*|version/code=${BUILD_NUMBER}|" export_presets.cfg
+                        sed -i "s|^version/name=.*|version/name=\\"${CLIENT_VERSION}\\"|" export_presets.cfg
+                        echo "Android versionCode=${BUILD_NUMBER}, versionName=${CLIENT_VERSION}"
 
                         echo "Exporting Windows build..."
                         godot --headless --export-release "Windows Desktop" exports/MechaCorpsDraft.exe 2>&1 || true
@@ -354,14 +463,34 @@ def call(Map config) {
                             echo "Linux export failed, check export_presets.cfg"
                             exit 1
                         fi
+                    """
 
-                        echo "Exporting Android build..."
-                        godot --headless --export-release "Android" exports/MechaCorpsDraft.apk 2>&1 || true
-                        if [ ! -f exports/MechaCorpsDraft.apk ]; then
-                            echo "Android export failed, check export_presets.cfg and Android SDK setup"
-                            exit 1
-                        fi
+                    script {
+                        if (env.HAS_UPLOAD_KEYSTORE == 'true') {
+                            withCredentials([
+                                file(credentialsId: 'android-upload-keystore', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_PATH'),
+                                string(credentialsId: 'android-upload-keystore-alias', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_USER'),
+                                string(credentialsId: 'android-upload-keystore-password', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD')
+                            ]) {
+                                sh """
+                                    echo "Exporting Android AAB (Play Store format)..."
+                                    godot --headless --export-release "Android" exports/MechaCorpsDraft.aab 2>&1 || true
+                                    if [ ! -f exports/MechaCorpsDraft.aab ]; then
+                                        echo "Android export failed. Checklist:"
+                                        echo "  - export_presets.cfg: gradle_build/use_gradle_build=true, export_format=1"
+                                        echo "  - Android SDK at \$ANDROID_SDK_ROOT, NDK at \$ANDROID_NDK_HOME"
+                                        echo "  - Godot Android build template installed in export_templates dir"
+                                        echo "  - Upload keystore credential android-upload-keystore accessible"
+                                        exit 1
+                                    fi
+                                """
+                            }
+                        } else {
+                            echo "Skipping Android AAB export (no upload keystore)."
+                        }
+                    }
 
+                    sh """
                         echo ""
                         echo "Exported executables:"
                         ls -lh exports/
@@ -370,8 +499,13 @@ def call(Map config) {
                     script {
                         env.WIN_EXE_SIZE = sh(script: "du -h exports/MechaCorpsDraft.exe | cut -f1", returnStdout: true).trim()
                         env.LINUX_EXE_SIZE = sh(script: "du -h exports/MechaCorpsDraft.x86_64 | cut -f1", returnStdout: true).trim()
-                        env.ANDROID_APK_SIZE = sh(script: "du -h exports/MechaCorpsDraft.apk | cut -f1", returnStdout: true).trim()
-                        echo "Executable sizes - Windows: ${env.WIN_EXE_SIZE}, Linux: ${env.LINUX_EXE_SIZE}, Android: ${env.ANDROID_APK_SIZE}"
+                        if (fileExists('exports/MechaCorpsDraft.aab')) {
+                            env.ANDROID_AAB_SIZE = sh(script: "du -h exports/MechaCorpsDraft.aab | cut -f1", returnStdout: true).trim()
+                            echo "Executable sizes - Windows: ${env.WIN_EXE_SIZE}, Linux: ${env.LINUX_EXE_SIZE}, Android AAB: ${env.ANDROID_AAB_SIZE}"
+                        } else {
+                            env.ANDROID_AAB_SIZE = 'skipped'
+                            echo "Executable sizes - Windows: ${env.WIN_EXE_SIZE}, Linux: ${env.LINUX_EXE_SIZE}, Android AAB: skipped"
+                        }
                     }
                 }
             }
@@ -387,43 +521,80 @@ def call(Map config) {
                         mkdir -p \${ARTIFACT_BASE}/game/Windows
                         mkdir -p \${ARTIFACT_BASE}/game/Linux
 
+                        # Godot's single-file export flattens every GDExtension
+                        # library + dependency into exports/ regardless of the
+                        # nested paths declared in the .gdextension files (those
+                        # get baked into the pck). Runtime loads read the pck's
+                        # .gdextension entries — e.g. res://bin/MCDCoreExt.gdextension
+                        # → lib/Linux-x86_64/libMCDCoreExt.so — so each loose lib
+                        # must be re-nested to match before zipping, otherwise
+                        # Godot logs "GDExtension dynamic library not found" and
+                        # every autoload that touches those classes fails to
+                        # parse (brown-screen on Linux in Steam builds).
+
+                        # --- Windows ---
                         cp exports/MechaCorpsDraft.exe \${ARTIFACT_BASE}/game/Windows/
+
+                        mkdir -p \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64
+                        mkdir -p \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64
+                        mkdir -p \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64
+
+                        # MCDCoreExt + its MinGW runtime deps (loaded by MCDCoreExt.dll,
+                        # so they live next to it in Windows's DLL search order).
+                        cp exports/MCDCoreExt.dll \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/
+                        cp bin/lib/Windows-x86_64/libcrypto-3-x64.dll \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/
+                        cp bin/lib/Windows-x86_64/libssl-3-x64.dll \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/
+                        cp bin/lib/Windows-x86_64/libwinpthread-1.dll \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/
+
+                        cp exports/libgodotsteam.windows.template_release.x86_64.dll \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64/
+                        cp exports/steam_api64.dll \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64/
+
+                        cp exports/libsentry.windows.release.x86_64.dll \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/
+                        cp exports/crashpad_handler.exe \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/
+                        cp exports/crashpad_wer.dll \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/
+
+                        # --- Linux ---
                         cp exports/MechaCorpsDraft.x86_64 \${ARTIFACT_BASE}/game/Linux/
 
-                        # CMake PREFIX "" strips the lib prefix for Windows builds.
-                        # Do not fall back to libMCDCoreExt.dll — a stale build with
-                        # the wrong name would produce a broken artifact.
-                        cp bin/lib/Windows-x86_64/MCDCoreExt.dll \${ARTIFACT_BASE}/game/Windows/
-                        cp bin/lib/Windows-x86_64/libcrypto-3-x64.dll \${ARTIFACT_BASE}/game/Windows/
-                        cp bin/lib/Windows-x86_64/libssl-3-x64.dll \${ARTIFACT_BASE}/game/Windows/
-                        cp bin/lib/Windows-x86_64/libwinpthread-1.dll \${ARTIFACT_BASE}/game/Windows/
-                        cp addons/godotsteam/win64/steam_api64.dll \${ARTIFACT_BASE}/game/Windows/
+                        mkdir -p \${ARTIFACT_BASE}/game/Linux/bin/lib/Linux-x86_64
+                        mkdir -p \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64
+                        mkdir -p \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64
 
-                        cat > \${ARTIFACT_BASE}/game/Windows/MCDCoreExt.gdextension << 'GDEXT'
-[configuration]
-entry_symbol = "example_library_init"
-compatibility_minimum = "4.3"
+                        cp exports/libMCDCoreExt.so \${ARTIFACT_BASE}/game/Linux/bin/lib/Linux-x86_64/
 
-[libraries]
-windows.release.x86_64 = "MCDCoreExt.dll"
-GDEXT
+                        cp exports/libgodotsteam.linux.template_release.x86_64.so \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64/
+                        cp exports/libsteam_api.so \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64/
 
-                        mkdir -p \${ARTIFACT_BASE}/game/Linux/lib/Linux-x86_64
-                        cp bin/lib/Linux-x86_64/libMCDCoreExt.so \${ARTIFACT_BASE}/game/Linux/lib/Linux-x86_64/
-                        cp addons/godotsteam/linux64/libsteam_api.so \${ARTIFACT_BASE}/game/Linux/
+                        cp exports/libsentry.linux.release.x86_64.so \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/
+                        cp exports/crashpad_handler \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/
+                        chmod +x \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/crashpad_handler
 
-                        cat > \${ARTIFACT_BASE}/game/Linux/MCDCoreExt.gdextension << 'GDEXT'
-[configuration]
-entry_symbol = "example_library_init"
-compatibility_minimum = "4.3"
-
-[libraries]
-linux.release.x86_64 = "lib/Linux-x86_64/libMCDCoreExt.so"
-GDEXT
+                        # Sanity check: fail loud if Godot didn't emit an expected lib
+                        # instead of shipping a half-populated zip.
+                        for f in \\
+                            \${ARTIFACT_BASE}/game/Windows/bin/lib/Windows-x86_64/MCDCoreExt.dll \\
+                            \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64/libgodotsteam.windows.template_release.x86_64.dll \\
+                            \${ARTIFACT_BASE}/game/Windows/addons/godotsteam/win64/steam_api64.dll \\
+                            \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/libsentry.windows.release.x86_64.dll \\
+                            \${ARTIFACT_BASE}/game/Windows/addons/sentry/bin/windows/x86_64/crashpad_handler.exe \\
+                            \${ARTIFACT_BASE}/game/Linux/bin/lib/Linux-x86_64/libMCDCoreExt.so \\
+                            \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64/libgodotsteam.linux.template_release.x86_64.so \\
+                            \${ARTIFACT_BASE}/game/Linux/addons/godotsteam/linux64/libsteam_api.so \\
+                            \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/libsentry.linux.release.x86_64.so \\
+                            \${ARTIFACT_BASE}/game/Linux/addons/sentry/bin/linux/x86_64/crashpad_handler; do
+                            if [ ! -f "\$f" ]; then
+                                echo "ERROR: expected GDExtension artifact missing: \$f"
+                                exit 1
+                            fi
+                        done
 
                         cd \${ARTIFACT_BASE}/game/Windows && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Windows-v${CLIENT_VERSION}.zip . && cd -
                         cd \${ARTIFACT_BASE}/game/Linux && zip -r ../../MechaCorpsDraft-${BRANCH_SAFE}-Linux-v${CLIENT_VERSION}.zip . && cd -
-                        cp exports/MechaCorpsDraft.apk \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.apk
+                        if [ -f exports/MechaCorpsDraft.aab ]; then
+                            cp exports/MechaCorpsDraft.aab \${ARTIFACT_BASE}/MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab
+                        else
+                            echo "⚠️  Android AAB was skipped — not staging Android artifact."
+                        fi
 
                         rm -rf \${ARTIFACT_BASE}/game
 
@@ -457,7 +628,7 @@ Author: \$COMMIT_AUTHOR_VAL
 Build Environment: ${BUILD_ENV}
 GCC Version: ${GCC_VERSION}
 CMake Version: ${CMAKE_VERSION}
-Platforms: Linux-x86_64, Windows-x86_64, Android-arm64-v8a
+Platforms: Linux-x86_64, Windows-x86_64, Android-arm64-v8a, Android-armeabi-v7a
 
 Library Sizes:
   Linux Release: ${LINUX_RELEASE_SIZE}
@@ -469,7 +640,7 @@ Library Sizes:
 Game Executables:
   Windows: ${WIN_EXE_SIZE}
   Linux: ${LINUX_EXE_SIZE}
-  Android APK: ${ANDROID_APK_SIZE}
+  Android AAB: ${ANDROID_AAB_SIZE}
 EOF
 
                         echo ""
@@ -492,6 +663,14 @@ EOF
 
                         env.PROTOCOL_VERSION = protocolVersion
 
+                        def androidEntry = (env.ANDROID_AAB_SIZE && env.ANDROID_AAB_SIZE != 'skipped') ? """,
+        "android": {
+            "download": "MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab",
+            "package": "com.mechacorpsgames.mechacorpsdraft",
+            "format": "aab",
+            "versionCode": ${BUILD_NUMBER}
+        }""" : ""
+
                         sh """
                             ARTIFACT_BASE="artifacts/${BRANCH_SAFE}/v${CLIENT_VERSION}"
                             cat > \${ARTIFACT_BASE}/manifest.json << EOF
@@ -512,11 +691,7 @@ EOF
         "linux": {
             "download": "MechaCorpsDraft-${BRANCH_SAFE}-Linux-v${CLIENT_VERSION}.zip",
             "executable": "MechaCorpsDraft.x86_64"
-        },
-        "android": {
-            "download": "MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.apk",
-            "package": "com.mechacorpsgames.mechacorpsdraft"
-        }
+        }${androidEntry}
     }
 }
 EOF
@@ -544,17 +719,25 @@ EOF
                         if (sentryCliExists) {
                             sh """
                                 export SENTRY_AUTH_TOKEN=\$(grep SENTRY_TOKEN /var/opt/mechacorpsgames/Src/.env.sentry | cut -d= -f2)
-                                echo "Uploading debug symbols for all platforms..."
+                                echo "Uploading client debug symbols for all platforms..."
                                 sentry-cli --url https://us.sentry.io \
                                     upload-dif --org mechacorps-llc --project mcd-client \
+                                    --include-sources \
                                     bin/lib/ \
-                                    Src/MCDCoreExt/build/ \
+                                    Src/MCDCoreExt/build/Release/ \
                                     Src/MCDCoreExt/build-windows/ \
                                     Src/MCDCoreExt/build-android/ \
                                     || echo "⚠️ Symbol upload failed (non-fatal)"
+
+                                echo "Verifying uploaded symbols..."
+                                sentry-cli --url https://us.sentry.io \
+                                    debug-files check \
+                                    --org mechacorps-llc --project mcd-client \
+                                    bin/lib/Linux-x86_64/libMCDCoreExt.so \
+                                    || echo "⚠️ Symbol verification failed (non-fatal)"
                             """
                         } else {
-                            echo "sentry-cli not installed, skipping symbol upload"
+                            echo "⚠️ sentry-cli not installed — debug symbols NOT uploaded. Install sentry-cli in the build agent to enable crash symbolication."
                         }
                     }
                 }
