@@ -197,6 +197,14 @@ def call(Map config) {
             // jenkins-shared PR description spells out the merge order.
             stage('Per-module Go tests') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                // PR validation doesn't bring up Postgres, so the
+                // `requireIntegrationDB(t)` guard added by MCDClient #1443
+                // would exit(1) any package that hits it. Tell the test
+                // harness to skip DB-dependent paths honestly; unit-only
+                // tests still run.
+                environment {
+                    MCDC_SKIP_DB_TESTS = '1'
+                }
                 parallel {
                     stage('test-go: Auth') {
                         when { expression { env.AUTH_CHANGED == 'true' } }
