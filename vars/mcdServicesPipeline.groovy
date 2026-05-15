@@ -135,8 +135,8 @@ def call(Map config) {
                                 echo "✓ MCPServer binary built"
 
                                 cd /var/opt/mechacorpsgames/Src
-                                docker-compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting build --no-cache crash-reporting mcp-server
-                                docker-compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting up -d --force-recreate crash-reporting mcp-server
+                                docker compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting build --no-cache crash-reporting mcp-server
+                                docker compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting up -d --force-recreate crash-reporting mcp-server
                                 sleep 5
 
                                 PASS=true
@@ -161,7 +161,7 @@ def call(Map config) {
                                 done
                                 if [ "\$PASS" = "false" ]; then
                                     cd /var/opt/mechacorpsgames/Src
-                                    docker-compose -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting -p src logs --tail=50 crash-reporting mcp-server
+                                    docker compose -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting -p src logs --tail=50 crash-reporting mcp-server
                                     exit 1
                                 fi
                             """
@@ -203,7 +203,7 @@ def call(Map config) {
 
                             sh """
                                 cd /var/opt/mechacorpsgames/Src/Monitoring
-                                docker-compose -f docker-compose.monitoring.yml --env-file /var/opt/mechacorpsgames/Src/.env.monitoring up -d --force-recreate
+                                docker compose -f docker-compose.monitoring.yml --env-file /var/opt/mechacorpsgames/Src/.env.monitoring up -d --force-recreate
                                 sleep 5
 
                                 OK=false
