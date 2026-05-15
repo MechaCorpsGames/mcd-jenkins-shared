@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client curl wget zip unzip zstd ca-certificates gnupg lsb-release \
         openjdk-17-jdk-headless \
         mingw-w64 \
-        python3 rsync sudo \
+        python3 python3-pytest rsync sudo \
         zlib1g-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
