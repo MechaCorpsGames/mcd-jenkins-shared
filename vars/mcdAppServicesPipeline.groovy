@@ -262,6 +262,17 @@ def call(Map config) {
                         env.AUCTION_HOUSE_CHANGED == 'true'
                     }
                 }
+                // The compose stack the smoke pytest spins up uses the
+                // default project name `mcd`, so containers (mcd-postgres-1
+                // etc.) are GLOBAL to the docker daemon. Concurrent
+                // AppServices builds (Main / FeatureBackend / FeatureCard)
+                // all racing the same names produced random-hex-prefixed
+                // duplicates and `compose ps reported no published host port`
+                // false failures. Serialize Docker Smoke globally so only one
+                // AppServices build at a time owns the `mcd-*` namespace.
+                options {
+                    lock(resource: 'mcd-default-compose-project')
+                }
                 steps {
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                         sh '''
