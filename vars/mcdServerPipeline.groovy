@@ -176,7 +176,18 @@ def call(Map config) {
                     // mcd/wasm-build container, so the Rust/clang/lld/nodejs
                     // toolchain comes from the image instead of requiring
                     // the build agent host to ship it.
-                    sh 'make wasm-bots'
+                    //
+                    // catchError → UNSTABLE because the current build-agent
+                    // docker doesn't accept `buildx build --load` (older CLI
+                    // version), so the wasm-build image fails to build. The
+                    // proxy can still ship — bots are loaded at runtime from
+                    // bots/ on the deployed VM, which retains previous-build
+                    // artifacts until a successful build replaces them. Tracked
+                    // separately; remove the catch when the agent has a
+                    // buildx-capable docker.
+                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                        sh 'make wasm-bots'
+                    }
                 }
             }
 
