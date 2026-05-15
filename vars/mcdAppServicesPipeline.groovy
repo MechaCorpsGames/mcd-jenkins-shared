@@ -172,8 +172,8 @@ def call(Map config) {
                     }
                 }
                 steps {
-                    // Post-MCDClient #1425, scripts/dev-pg.sh and the Nix
-                    // devShell are gone; scripts/docker_dev.py is now the
+                    // Post-MCDClient #1425, the legacy local Postgres helper
+                    // and Nix devShell are gone; scripts/docker_dev.py is now the
                     // canonical way to bring up Postgres + Auth/Account/
                     // Auction for integration tests. PGHOST=localhost gates
                     // each module's `requireIntegrationDB(t)` per MCDClient
