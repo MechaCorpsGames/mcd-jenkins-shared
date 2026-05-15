@@ -192,7 +192,8 @@ def call(Map config) {
                         # Override the project name per workspace so the
                         # network/volume names become `mcd-${JOB_NAME}_mcd-net`
                         # / `mcd-${JOB_NAME}_mcd-pgdata`, fully isolated.
-                        export COMPOSE_PROJECT_NAME="mcd-${JOB_NAME}"
+                        # Compose requires lowercase project names.
+                        export COMPOSE_PROJECT_NAME="mcd-$(echo "${JOB_NAME}" | tr 'A-Z' 'a-z')"
 
                         cleanup() {
                             python3 scripts/docker_dev.py down --pg || true
