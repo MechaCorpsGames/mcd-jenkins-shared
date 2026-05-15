@@ -172,15 +172,25 @@ def call(Map config) {
                     }
                 }
                 steps {
+                    // Post-MCDClient #1425, scripts/dev-pg.sh and the Nix
+                    // devShell are gone; scripts/docker_dev.py is now the
+                    // canonical way to bring up Postgres + Auth/Account/
+                    // Auction for integration tests. PGHOST=localhost gates
+                    // each module's `requireIntegrationDB(t)` per MCDClient
+                    // #1443.
                     sh '''
-                        unset GOROOT
-                        nix develop . --command bash -c '
-                            dev-pg.sh init && dev-pg.sh start || exit 1
-                            trap "dev-pg.sh stop" EXIT
-                            cd Src/Auth && go test ./... &&
-                            cd ../AccountService && go test ./... &&
-                            cd ../AuctionHouse && go test ./...
-                        '
+                        set -e
+                        cleanup() {
+                            python3 scripts/docker_dev.py down --pg || true
+                        }
+                        trap cleanup EXIT
+
+                        python3 scripts/docker_dev.py up
+                        export PGHOST=localhost
+
+                        (cd Src/Auth && go test ./...) && \
+                        (cd Src/AccountService && go test ./...) && \
+                        (cd Src/AuctionHouse && go test ./...)
                     '''
                 }
             }
@@ -226,10 +236,9 @@ def call(Map config) {
                             # bugs) or conflict on names.
                             docker compose --project-directory docker -f docker/compose.yml down -v --remove-orphans 2>/dev/null || true
 
-                            unset GOROOT
-                            nix develop . --command bash -c '
-                                python -m pytest tests/e2e/ -m docker --junitxml=test-results/docker-smoke.xml
-                            '
+                            # Post-#1425: no Nix shell wrapper. pytest is
+                            # provided by the build-agent image directly.
+                            python3 -m pytest tests/e2e/ -m docker --junitxml=test-results/docker-smoke.xml
                         '''
                     }
                 }

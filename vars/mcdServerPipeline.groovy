@@ -170,12 +170,13 @@ def call(Map config) {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     // bots/*.wasm are the artifacts the proxy loads via
-                    // --bot-dir. `make wasm-bots-nix` wraps `nix develop -c
-                    // make wasm-bots`, so the Rust/clang/lld/nodejs toolchain
-                    // comes from the flake instead of requiring the build
-                    // agent image to ship it. First cold run pulls flake
-                    // inputs; cached thereafter.
-                    sh 'make wasm-bots-nix'
+                    // --bot-dir. Post-MCDClient #1425 (Nix → Docker dev shell
+                    // migration), `make wasm-bots` is the only variant — it
+                    // shells out to scripts/docker_dev.py to build inside the
+                    // mcd/wasm-build container, so the Rust/clang/lld/nodejs
+                    // toolchain comes from the image instead of requiring
+                    // the build agent host to ship it.
+                    sh 'make wasm-bots'
                 }
             }
 
