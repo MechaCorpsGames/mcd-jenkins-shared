@@ -180,23 +180,29 @@ def call(Map config) {
                     // #1443.
                     sh '''
                         set -e
+                        # compose.yml hardcodes `name: mcd`, so every workspace
+                        # that runs `docker compose up` shares the same global
+                        # network `mcd_mcd-net` and volume `mcd_mcd-pgdata`.
+                        # Concurrent AppServices builds (Main / FeatureBackend
+                        # / FeatureCard) then trip over each other:
+                        #   - duplicate `mcd_mcd-net` networks → compose v2
+                        #     refuses with `ambiguous (2 matches found)`.
+                        #   - postgres data corrupts across schema bumps when
+                        #     two workspaces share `mcd_mcd-pgdata`.
+                        # Override the project name per workspace so the
+                        # network/volume names become `mcd-${JOB_NAME}_mcd-net`
+                        # / `mcd-${JOB_NAME}_mcd-pgdata`, fully isolated.
+                        export COMPOSE_PROJECT_NAME="mcd-${JOB_NAME}"
+
                         cleanup() {
                             python3 scripts/docker_dev.py down --pg || true
                         }
                         trap cleanup EXIT
 
-                        # Pre-clean: every workspace's docker_dev.py shares the
-                        # project name `mcd`, so concurrent AppServices builds
-                        # produce duplicate `mcd_mcd-net` networks; on the next
-                        # build `docker compose` then refuses with
-                        # `network mcd_mcd-net is ambiguous (2 matches found)`.
-                        # Tear down any leftover compose state first.
-                        docker compose --project-directory "$PWD/docker" -f "$PWD/docker/compose.yml" down -v --remove-orphans 2>/dev/null || true
-                        # Belt + suspenders: prune duplicate `mcd_mcd-net`
-                        # rows that previous concurrent runs may have left.
-                        for nid in $(docker network ls --filter 'name=^mcd_mcd-net$' --format '{{.ID}}'); do
-                            docker network rm "$nid" 2>/dev/null || true
-                        done
+                        # Tear down any leftover compose state from a prior
+                        # build of THIS workspace (matched by the project name
+                        # set above) before init/up.
+                        docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$PWD/docker" -f "$PWD/docker/compose.yml" down -v --remove-orphans 2>/dev/null || true
 
                         # First-time bring-up on a fresh workspace needs
                         # `init` to generate JWT keys and seed PGDATA before
