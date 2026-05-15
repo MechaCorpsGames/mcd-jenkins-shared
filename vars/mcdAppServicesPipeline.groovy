@@ -270,31 +270,34 @@ def call(Map config) {
                 // duplicates and `compose ps reported no published host port`
                 // false failures. Serialize Docker Smoke globally so only one
                 // AppServices build at a time owns the `mcd-*` namespace.
-                options {
-                    lock(resource: 'mcd-default-compose-project')
-                }
                 steps {
-                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        sh '''
-                            set -e
-                            rm -rf test-results
-                            mkdir -p test-results
+                    // `lock` is a step (Lockable Resources plugin), not a
+                    // stage option. Serializes Docker Smoke globally so the
+                    // default-project `mcd-*` container namespace isn't
+                    // raced by concurrent AppServices builds.
+                    lock(resource: 'mcd-default-compose-project') {
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh '''
+                                set -e
+                                rm -rf test-results
+                                mkdir -p test-results
 
-                            # Docker Smoke tests parametrize on the default
-                            # compose container names (`mcd-postgres-1` etc.),
-                            # so we can't set COMPOSE_PROJECT_NAME here.
-                            # Aggressive cleanup instead: tear down the
-                            # default-project stack AND force-remove any
-                            # stranded mcd-* containers from prior runs.
-                            docker compose --project-directory "$PWD/docker" -f "$PWD/docker/compose.yml" down -v --remove-orphans 2>/dev/null || true
-                            for cn in mcd-postgres-1 mcd-auth-1 mcd-account-1 mcd-auction-1; do
-                                docker rm -f "$cn" 2>/dev/null || true
-                            done
+                                # Docker Smoke tests parametrize on the default
+                                # compose container names (`mcd-postgres-1` etc.),
+                                # so we can't set COMPOSE_PROJECT_NAME here.
+                                # Aggressive cleanup instead: tear down the
+                                # default-project stack AND force-remove any
+                                # stranded mcd-* containers from prior runs.
+                                docker compose --project-directory "$PWD/docker" -f "$PWD/docker/compose.yml" down -v --remove-orphans 2>/dev/null || true
+                                for cn in mcd-postgres-1 mcd-auth-1 mcd-account-1 mcd-auction-1; do
+                                    docker rm -f "$cn" 2>/dev/null || true
+                                done
 
-                            # Post-#1425: no Nix shell wrapper. pytest is
-                            # provided by the build-agent image directly.
-                            python3 -m pytest tests/e2e/ -m docker --junitxml=test-results/docker-smoke.xml
-                        '''
+                                # Post-#1425: no Nix shell wrapper. pytest is
+                                # provided by the build-agent image directly.
+                                python3 -m pytest tests/e2e/ -m docker --junitxml=test-results/docker-smoke.xml
+                            '''
+                        }
                     }
                 }
                 post {
