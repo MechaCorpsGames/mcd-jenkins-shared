@@ -44,12 +44,12 @@ def call(Map config) {
     def auctionPort = "${basePort + 83}"
 
     // Container name prefixes (compose project name with underscores)
-    def authContainer    = "${authProject}_auth_1"
-    def accountContainer = "${accountProject}_account-service_1"
-    def auctionContainer = "${auctionProject}_auction-house_1"
+    def authContainer    = "${authProject}-auth-1"
+    def accountContainer = "${accountProject}-account-service-1"
+    def auctionContainer = "${auctionProject}-auction-house-1"
 
     // Postgres container (auth stack owns postgres)
-    def postgresContainer = "${authProject}_postgres_1"
+    def postgresContainer = "${authProject}-postgres-1"
 
     pipeline {
         agent {
@@ -269,13 +269,16 @@ def call(Map config) {
                             rm -rf test-results
                             mkdir -p test-results
 
-                            # Pre-cleanup: a previous build that didn't tear
-                            # down cleanly would leave containers using the
-                            # same fixed names (mcd-postgres-1, mcd-auth-1,
-                            # mcd-account-1, mcd-auction-1). docker_dev.py up
-                            # would then either reuse them (masking real
-                            # bugs) or conflict on names.
-                            docker compose --project-directory docker -f docker/compose.yml down -v --remove-orphans 2>/dev/null || true
+                            # Docker Smoke tests parametrize on the default
+                            # compose container names (`mcd-postgres-1` etc.),
+                            # so we can't set COMPOSE_PROJECT_NAME here.
+                            # Aggressive cleanup instead: tear down the
+                            # default-project stack AND force-remove any
+                            # stranded mcd-* containers from prior runs.
+                            docker compose --project-directory "$PWD/docker" -f "$PWD/docker/compose.yml" down -v --remove-orphans 2>/dev/null || true
+                            for cn in mcd-postgres-1 mcd-auth-1 mcd-account-1 mcd-auction-1; do
+                                docker rm -f "$cn" 2>/dev/null || true
+                            done
 
                             # Post-#1425: no Nix shell wrapper. pytest is
                             # provided by the build-agent image directly.
@@ -287,10 +290,9 @@ def call(Map config) {
                     always {
                         // Belt-and-suspenders teardown — the smoke owns
                         // `down --pg` but a partial failure or pytest abort
-                        // could leave the stack up. The next build would
-                        // hit name collisions on mcd-* containers.
+                        // could leave the stack up.
                         sh '''
-                            docker compose --project-directory docker -f docker/compose.yml down -v --remove-orphans 2>/dev/null || true
+                            docker compose --project-directory "$PWD/docker" -f "$PWD/docker/compose.yml" down -v --remove-orphans 2>/dev/null || true
                         '''
                         script {
                             try {

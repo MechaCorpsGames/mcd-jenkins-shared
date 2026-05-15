@@ -533,7 +533,7 @@ BOT_PASSWORD=${config.botPassword ?: ''}
 GAUNTLET_INSTANT_RESOLVE=${config.gauntletInstantResolve ?: ''}
 ENVEOF
                         """
-                        def containerName = "${composeProject}_proxy_1"
+                        def containerName = "${composeProject}-proxy-1"
 
                         def newHash = sh(script: "sha256sum bin/MCDProxy | cut -d' ' -f1", returnStdout: true).trim()
                         def oldHash = sh(script: "sha256sum ${config.deployPath}/MCDProxy 2>/dev/null | cut -d' ' -f1 || echo 'none'", returnStdout: true).trim()
