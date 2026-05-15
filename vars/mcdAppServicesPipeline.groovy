@@ -211,11 +211,27 @@ def call(Map config) {
                         # call every build.
                         python3 scripts/docker_dev.py init
                         python3 scripts/docker_dev.py up
-                        export PGHOST=localhost
 
-                        (cd Src/Auth && go test ./...) && \
-                        (cd Src/AccountService && go test ./...) && \
-                        (cd Src/AuctionHouse && go test ./...)
+                        # compose.yml binds postgres to an ephemeral host
+                        # port (MCD_PG_HOST_PORT unset) so multiple concurrent
+                        # workspaces don't collide on 5432. The Go test
+                        # runners read libpq PGHOST/PGPORT, so look up the
+                        # actual mapped host port for THIS workspace's
+                        # postgres container and export. The build agent
+                        # runs with --network host, so localhost reaches it.
+                        export PGHOST=localhost
+                        export PGPORT="$(docker port "${COMPOSE_PROJECT_NAME}-postgres-1" 5432/tcp | awk -F: 'NR==1{print $NF}')"
+                        export PGUSER=mechacorps
+                        export PGPASSWORD=mechacorps
+                        if [ -z "$PGPORT" ]; then
+                            echo "FAIL: could not resolve mapped postgres host port" >&2
+                            exit 1
+                        fi
+                        echo "Postgres reachable at $PGHOST:$PGPORT"
+
+                        (cd Src/Auth && PGDATABASE=mechacorps_auth go test ./...) && \
+                        (cd Src/AccountService && PGDATABASE=mechacorps_account go test ./...) && \
+                        (cd Src/AuctionHouse && PGDATABASE=mechacorps_auction go test ./...)
                     '''
                 }
             }
