@@ -185,6 +185,19 @@ def call(Map config) {
                         }
                         trap cleanup EXIT
 
+                        # Pre-clean: every workspace's docker_dev.py shares the
+                        # project name `mcd`, so concurrent AppServices builds
+                        # produce duplicate `mcd_mcd-net` networks; on the next
+                        # build `docker compose` then refuses with
+                        # `network mcd_mcd-net is ambiguous (2 matches found)`.
+                        # Tear down any leftover compose state first.
+                        docker compose --project-directory "$PWD/docker" -f "$PWD/docker/compose.yml" down -v --remove-orphans 2>/dev/null || true
+                        # Belt + suspenders: prune duplicate `mcd_mcd-net`
+                        # rows that previous concurrent runs may have left.
+                        for nid in $(docker network ls --filter 'name=^mcd_mcd-net$' --format '{{.ID}}'); do
+                            docker network rm "$nid" 2>/dev/null || true
+                        done
+
                         # First-time bring-up on a fresh workspace needs
                         # `init` to generate JWT keys and seed PGDATA before
                         # `up` will succeed. init is idempotent; safe to

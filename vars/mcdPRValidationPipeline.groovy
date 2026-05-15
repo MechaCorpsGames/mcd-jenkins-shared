@@ -454,7 +454,14 @@ def call(Map config) {
                 // mcp-test.log. That log is archived as the postmortem artifact
                 // (logs/{gameUUID}/ live in t.TempDir() and are cleaned by the
                 // test framework before this stage's post block runs).
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.MCP_GAME_SERVER_CHANGED == 'true' } }
+                when {
+                    allOf {
+                        expression { env.PR_ALREADY_MERGED != 'true' && env.MCP_GAME_SERVER_CHANGED == 'true' }
+                        // Src/MCPGameServer/ doesn't exist on main yet — skip
+                        // the stage on branches that don't ship the dir.
+                        expression { fileExists('Src/MCPGameServer') }
+                    }
+                }
                 steps {
                     sh '''#!/bin/bash
                         set -o pipefail
