@@ -271,33 +271,37 @@ def call(Map config) {
                 // false failures. Serialize Docker Smoke globally so only one
                 // AppServices build at a time owns the `mcd-*` namespace.
                 steps {
-                    // `lock` is a step (Lockable Resources plugin), not a
-                    // stage option. Serializes Docker Smoke globally so the
-                    // default-project `mcd-*` container namespace isn't
-                    // raced by concurrent AppServices builds.
-                    lock(resource: 'mcd-default-compose-project') {
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            sh '''
-                                set -e
-                                rm -rf test-results
-                                mkdir -p test-results
+                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                        // Lockable Resources plugin isn't installed on this
+                        // Jenkins, so use a host-level file lock to serialize
+                        // Docker Smoke across concurrent AppServices builds.
+                        // The smoke spins up the default-project `mcd-*`
+                        // container namespace, which is GLOBAL on the daemon;
+                        // concurrent runs produced
+                        // `Container "/<hex>_mcd-postgres-1" is already in use`.
+                        // /opt/mechacorps is bind-mounted into every build
+                        // agent (see pipeline `agent { docker { args ... } }`),
+                        // so a flock on a file there is genuinely cross-agent.
+                        sh '''
+                            set -e
+                            rm -rf test-results
+                            mkdir -p test-results
 
-                                # Docker Smoke tests parametrize on the default
-                                # compose container names (`mcd-postgres-1` etc.),
-                                # so we can't set COMPOSE_PROJECT_NAME here.
-                                # Aggressive cleanup instead: tear down the
-                                # default-project stack AND force-remove any
-                                # stranded mcd-* containers from prior runs.
+                            mkdir -p /opt/mechacorps/.locks
+                            (
+                                flock 9
+                                set -e
+                                # Aggressive cleanup of stranded default-project
+                                # containers — `down -v --remove-orphans` first,
+                                # then force-rm in case compose lost track.
                                 docker compose --project-directory "$PWD/docker" -f "$PWD/docker/compose.yml" down -v --remove-orphans 2>/dev/null || true
                                 for cn in mcd-postgres-1 mcd-auth-1 mcd-account-1 mcd-auction-1; do
                                     docker rm -f "$cn" 2>/dev/null || true
                                 done
 
-                                # Post-#1425: no Nix shell wrapper. pytest is
-                                # provided by the build-agent image directly.
                                 python3 -m pytest tests/e2e/ -m docker --junitxml=test-results/docker-smoke.xml
-                            '''
-                        }
+                            ) 9>/opt/mechacorps/.locks/mcd-docker-smoke.lock
+                        '''
                     }
                 }
                 post {
