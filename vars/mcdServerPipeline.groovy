@@ -576,8 +576,8 @@ ENVEOF
                                 fi
 
                                 cd /var/opt/mechacorpsgames/Src
-                                docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} build --no-cache proxy
-                                docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --force-recreate proxy
+                                docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} build --no-cache proxy
+                                docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --force-recreate proxy
 
                                 sleep 3
                                 if docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
@@ -612,7 +612,7 @@ ENVEOF
                                     docker rm -f ${containerName} 2>/dev/null || true
 
                                     cd /var/opt/mechacorpsgames/Src
-                                    docker-compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d proxy
+                                    docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d proxy
                                 else
                                     echo "✓ Proxy unchanged and container already running"
                                 fi
