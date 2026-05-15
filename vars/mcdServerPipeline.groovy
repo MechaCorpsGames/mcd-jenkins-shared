@@ -321,7 +321,7 @@ def call(Map config) {
                 // test framework before this stage's post block runs).
                 when { expression { env.MCP_GAME_SERVER_CHANGED == 'true' } }
                 steps {
-                    sh '''
+                    sh '''#!/bin/bash
                         set -o pipefail
                         mkdir -p reports/mcp-game-server
                         cd Src/MCPGameServer
