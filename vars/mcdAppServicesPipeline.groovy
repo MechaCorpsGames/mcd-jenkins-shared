@@ -185,6 +185,11 @@ def call(Map config) {
                         }
                         trap cleanup EXIT
 
+                        # First-time bring-up on a fresh workspace needs
+                        # `init` to generate JWT keys and seed PGDATA before
+                        # `up` will succeed. init is idempotent; safe to
+                        # call every build.
+                        python3 scripts/docker_dev.py init
                         python3 scripts/docker_dev.py up
                         export PGHOST=localhost
 
