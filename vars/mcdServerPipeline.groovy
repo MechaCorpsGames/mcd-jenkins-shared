@@ -60,9 +60,9 @@ def call(Map config) {
                 // Filter: only trigger when the push is to our branch AND touches server-relevant paths
                 // Paths: GameServer, Proxy, TestClient (server-only), Include/External/Data (shared),
                 //        Shared (Go services), Validation (unknown→both), MCPGameServer (Go MCP harness),
-                //        deploy/go.work/docker-compose.proxy, flake.nix/lock, Jenkinsfile.server (pipeline itself)
+                //        deploy/go.work/docker-compose.proxy, Jenkinsfile.server (pipeline itself)
                 regexpFilterText: '$ref $files_added $files_modified $files_removed',
-                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(GameServer|Proxy|TestClient|Include|External|Shared|Validation|MCPGameServer)/|Data/|Src/(deploy|go\\.work|docker-compose\\.proxy)|\\.Jenkins/Jenkinsfile\\.server|flake\\.|scripts/dev-pg)"
+                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(GameServer|Proxy|TestClient|Include|External|Shared|Validation|MCPGameServer)/|Data/|Src/(deploy|go\\.work|docker-compose\\.proxy)|\\.Jenkins/Jenkinsfile\\.server|scripts/dev-pg)"
             )
         }
 
