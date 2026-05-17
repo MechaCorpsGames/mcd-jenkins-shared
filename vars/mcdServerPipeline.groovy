@@ -473,9 +473,20 @@ EOF
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
-                        mkdir -p ${config.deployPath}/versions ${config.deployPath}/testclient-versions
+                        mkdir -p ${config.deployPath}/versions ${config.deployPath}/testclient-versions ${config.deployPath}/Data/GameData
                         rsync -rlvz --no-group bin/versions/ ${config.deployPath}/versions/
                         rsync -rlvz --no-group bin/testclient-versions/ ${config.deployPath}/testclient-versions/
+                        # MCDServer auto-detects its data dir as <binary-parent-2>/Data/GameData/Cards;
+                        # the deployed binary at versions/v.../MCDServer resolves to ${config.deployPath}/Data/GameData/Cards.
+                        # Without the rsync the server falls back to the compile-time path (the Jenkins
+                        # workspace) and crashes immediately on the first card-data load.
+                        # Skip if Data/GameData/ wasn't produced (older branches without the GameData refactor).
+                        if [ -d Data/GameData ]; then \
+                          rsync -rlvz --no-group --delete Data/GameData/ ${config.deployPath}/Data/GameData/; \
+                          echo "✓ Deployed Data/GameData to ${config.environment}"; \
+                        else \
+                          echo "ℹ Data/GameData/ not present in workspace — skipping (release-branch path)"; \
+                        fi
                         echo "✓ Deployed GameServer to ${config.environment}: \$(cat ${config.deployPath}/versions/latest.txt)"
                         echo "✓ Deployed TestClient to ${config.environment}: \$(cat ${config.deployPath}/testclient-versions/latest.txt)"
                     """
