@@ -210,6 +210,21 @@ def call(Map config) {
                 }
             }
 
+            // Data/GameData/ is gitignored — it's a build artifact produced
+            // from Data/Cards/* by Src/MCDCoreExt/export_done_cards.py against
+            // the DONE-cards registry. The MCDServerTest binary loads its
+            // card library from Data/GameData/Cards/* at runtime, so we need
+            // to populate that directory before the Unit Tests stage. On
+            // branches where the GameData refactor hasn't landed (e.g. the
+            // older release branch) the target may not exist; the
+            // `|| echo ...` fallback keeps the pipeline backward-compatible.
+            stage('Populate GameData') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh 'make export-done || echo "[Populate GameData] make target missing on this branch — skipping"'
+                }
+            }
+
             stage('Unit Tests') {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
