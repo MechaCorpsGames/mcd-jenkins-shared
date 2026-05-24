@@ -101,12 +101,20 @@ def call(Map config) {
                             // *.mechacorpsgames.com wildcard cert. Avoid second-
                             // level subdomains like staging.play... on the basic
                             // Universal SSL plan — TLS handshake fails.
+                            //
+                            // No port in the public URL: Cloudflare terminates
+                            // TLS on 443 and proxies internally to localhost:46070
+                            // via the tunnel. stagingWsPort is kept as a config
+                            // knob for callers who BYPASS Cloudflare (e.g. LAN-
+                            // direct testing), but the default checklist uses
+                            // the bare https/wss form.
                             def stagingServerHost = config.stagingServerHost ?: 'play-staging.mechacorpsgames.com'
-                            def stagingWsPort = config.stagingWsPort ?: 46070
-                            def checklist = """1. Download the client build below.
-2. Launch with Steam Launch Options OR command line:
-   `--server-url wss://${stagingServerHost}:${stagingWsPort}`
-3. Run the BVT scenarios.
+                            def stagingClientUrl = config.stagingClientUrl ?: "wss://${stagingServerHost}"
+                            def checklist = """1. Download the latest MCDClient-Release artifact (button below).
+2. Extract; launch the binary with command-line override:
+   `--server-url ${stagingClientUrl}`
+   (or set this in Steam Launch Options if testing via your Steam install.)
+3. Run the BVT scenarios against play-staging.
 4. If pass: click **Confirm in Jenkins** below.
 5. After Jenkins promote succeeds, click *Set Live* in Steamworks."""
 
