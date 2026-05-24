@@ -97,7 +97,11 @@ def call(Map config) {
                             // Tester checklist surfaced inline so operators
                             // see the launch-args trick without having to
                             // find the wiki page.
-                            def stagingServerHost = config.stagingServerHost ?: 'staging.play.mechacorpsgames.com'
+                            // `play-staging.mechacorpsgames.com` fits Cloudflare's
+                            // *.mechacorpsgames.com wildcard cert. Avoid second-
+                            // level subdomains like staging.play... on the basic
+                            // Universal SSL plan — TLS handshake fails.
+                            def stagingServerHost = config.stagingServerHost ?: 'play-staging.mechacorpsgames.com'
                             def stagingWsPort = config.stagingWsPort ?: 46070
                             def checklist = """1. Download the client build below.
 2. Launch with Steam Launch Options OR command line:
