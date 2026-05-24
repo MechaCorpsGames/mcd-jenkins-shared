@@ -82,6 +82,14 @@ def call(Map config) {
 
             stage('Confirm Promote') {
                 steps {
+                    script {
+                        if (config.notifyDiscord != false) {
+                            discordNotify.simple(
+                                "⏳ ${config.jobName} #${BUILD_NUMBER} awaiting promote confirmation — server ${env.STAGING_SERVER_VERSION} ready to ship from staging to production. Open ${env.BUILD_URL} to approve.",
+                                "16776960"
+                            )
+                        }
+                    }
                     // Manual gate so an operator can re-check BVT signoff
                     // before flipping prod. Times out after 60min so a left-
                     // open prompt doesn't block forever.
@@ -156,11 +164,18 @@ def call(Map config) {
             success {
                 script {
                     if (config.notifyDiscord != false) {
-                        discordNotify(
-                            webhookUrl: env.DISCORD_WEBHOOK,
-                            title: "✅ ${config.jobName} promoted to production",
-                            description: "Server ${env.STAGING_SERVER_VERSION} is now live at ${config.prodDeployPath}.\n\n**Reminder:** click *Set Live* in Steamworks to publish the matching client build.",
-                            color: 0x2ECC71
+                        // Use discordNotify.success for the rich-embed style
+                        // (matches mcdServerPipeline / mcdClientPipeline format).
+                        // environment=production so the embed picks up the prod
+                        // green color + 🚀 emoji.
+                        discordNotify.success(
+                            title: "MechaCorps Server Promoted",
+                            message: "🚀 Promoted Server ${env.STAGING_SERVER_VERSION} from staging to production.\n**Action required:** click *Set Live* in Steamworks to publish the matching client build.",
+                            jenkinsUrl: env.JENKINS_URL_BASE ?: env.JENKINS_URL,
+                            jobName: config.jobName,
+                            environment: 'production',
+                            branch: 'release',
+                            version: env.STAGING_SERVER_VERSION ?: 'N/A'
                         )
                     }
                 }
@@ -168,17 +183,27 @@ def call(Map config) {
             failure {
                 script {
                     if (config.notifyDiscord != false) {
-                        discordNotify(
-                            webhookUrl: env.DISCORD_WEBHOOK,
-                            title: "❌ ${config.jobName} promote failed",
-                            description: "Attempted to promote ${env.STAGING_SERVER_VERSION ?: 'unknown'} from ${config.stagingDeployPath} to ${config.prodDeployPath}. See build log: ${env.BUILD_URL}",
-                            color: 0xE74C3C
+                        discordNotify.failure(
+                            title: "MechaCorps Server Promote",
+                            message: "❌ Failed to promote ${env.STAGING_SERVER_VERSION ?: 'unknown'} from ${config.stagingDeployPath} to ${config.prodDeployPath}.",
+                            jenkinsUrl: env.JENKINS_URL_BASE ?: env.JENKINS_URL,
+                            jobName: config.jobName,
+                            environment: 'production',
+                            branch: 'release'
                         )
                     }
                 }
             }
             aborted {
-                echo 'Promote aborted by operator.'
+                script {
+                    if (config.notifyDiscord != false) {
+                        discordNotify.simple(
+                            "⚠️ ${config.jobName} #${BUILD_NUMBER} aborted before promote completed.",
+                            "9807270"  // grey
+                        )
+                    }
+                    echo 'Promote aborted by operator.'
+                }
             }
         }
     }
