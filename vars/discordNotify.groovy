@@ -158,4 +158,90 @@ def failure(Map config) {
     sh 'rm -f .discord_payload.json'
 }
 
+/**
+ * Send an "awaiting approval" notification with action buttons.
+ *
+ * Use for pipelines that pause on a manual input{} step — gives operators
+ * a one-click path from Discord to (a) the pipeline page, (b) the input
+ * confirmation prompt, and (c) the downloadable artifact they need to
+ * verify before approving (e.g. the BVT client build).
+ *
+ * config keys:
+ *   title:       Headline for the embed (e.g. "Promote awaiting approval")
+ *   message:     Body text explaining what to do
+ *   jobName:     Jenkins job name (for the button URL + footer)
+ *   jenkinsUrl:  Base Jenkins URL (e.g. https://jenkins.mechacorpsgames.com)
+ *   version:     Optional version string surfaced as a field
+ *   environment: Optional environment string surfaced as a field
+ *   bvtArtifactUrl: Optional URL to the client build testers download.
+ *                   Common pattern: `${jenkinsUrl}/job/MCDClient-Release/lastSuccessfulBuild/artifact/`
+ *   instructionsField: Optional pre-formatted tester-instructions block
+ *                      shown as a multi-line field above the buttons
+ *                      (e.g. how to launch the BVT client pointed at staging).
+ *   githubUser:  Optional GitHub username to @-mention
+ */
+def awaitingApproval(Map config) {
+    def buildUrl = "${config.jenkinsUrl}/job/${config.jobName}/${BUILD_NUMBER}/"
+    def inputUrl = "${buildUrl}input/"
+
+    def discordId = lookupDiscordId(config.githubUser)
+    def contentField = ''
+    def mentionsField = ''
+    if (discordId) {
+        contentField = """"content":"<@${discordId}>","""
+        mentionsField = ""","allowed_mentions":{"users":["${discordId}"]}"""
+    }
+
+    def fields = []
+    if (config.environment) {
+        fields << [name: 'Environment', value: config.environment.capitalize(), inline: true]
+    }
+    if (config.version) {
+        fields << [name: 'Version', value: config.version, inline: true]
+    }
+    if (config.instructionsField) {
+        fields << [name: 'Tester checklist', value: config.instructionsField, inline: false]
+    }
+    def fieldsJson = fields.collect { f ->
+        def escapedValue = f.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+        """{"name":"${f.name}","value":"${escapedValue}","inline":${f.inline}}"""
+    }.join(',')
+
+    // Button row. The Confirm button takes operators straight to the input
+    // prompt; clicking it opens the Jenkins page where the "Promote" button
+    // is one more click away. Download button is omitted when no BVT
+    // artifact URL is supplied (keeps the row tidy for non-BVT approvals).
+    def buttons = [
+        """{"type":2,"style":5,"label":"View Pipeline","url":"${buildUrl}"}""",
+        """{"type":2,"style":5,"label":"Confirm in Jenkins","url":"${inputUrl}"}"""
+    ]
+    if (config.bvtArtifactUrl) {
+        buttons << """{"type":2,"style":5,"label":"Download BVT Client","url":"${config.bvtArtifactUrl}"}"""
+    }
+    def buttonsJson = buttons.join(',')
+
+    // Yellow/amber color (16776960) — same as the .simple "in progress"
+    // notifications so the awaiting-approval message reads as "warm,
+    // waiting on you" rather than success/failure.
+    def payload = """{
+        ${contentField}
+        "embeds": [{
+            "title": "⏳ ${config.title}",
+            "description": "${config.message?.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') ?: ''}",
+            "color": 16776960,
+            "fields": [${fieldsJson}],
+            "timestamp": "${new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC'))}",
+            "footer": {"text": "Jenkins CI/CD — ${config.jobName} #${BUILD_NUMBER}"},
+            "url": "${buildUrl}"
+        }],
+        "components": [{
+            "type": 1,
+            "components": [${buttonsJson}]
+        }]${mentionsField}
+    }"""
+    writeFile file: '.discord_payload.json', text: payload
+    sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
+    sh 'rm -f .discord_payload.json'
+}
+
 return this

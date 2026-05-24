@@ -84,9 +84,37 @@ def call(Map config) {
                 steps {
                     script {
                         if (config.notifyDiscord != false) {
-                            discordNotify.simple(
-                                "⏳ ${config.jobName} #${BUILD_NUMBER} awaiting promote confirmation — server ${env.STAGING_SERVER_VERSION} ready to ship from staging to production. Open ${env.BUILD_URL} to approve.",
-                                "16776960"
+                            // Default BVT client artifact: lastSuccessful
+                            // MCDClient-Release build. Operators override via
+                            // config.bvtClientJobName if the BVT client lives
+                            // under a different Jenkins job name.
+                            def bvtJob = config.bvtClientJobName ?: 'MCDClient-Release'
+                            def jenkinsBase = env.JENKINS_URL_BASE ?: env.JENKINS_URL
+                            // Trim trailing slash for consistent URL composition.
+                            jenkinsBase = jenkinsBase?.replaceAll('/$', '')
+                            def bvtUrl = "${jenkinsBase}/job/${bvtJob}/lastSuccessfulBuild/artifact/"
+
+                            // Tester checklist surfaced inline so operators
+                            // see the launch-args trick without having to
+                            // find the wiki page.
+                            def stagingServerHost = config.stagingServerHost ?: 'staging.play.mechacorpsgames.com'
+                            def stagingWsPort = config.stagingWsPort ?: 46070
+                            def checklist = """1. Download the client build below.
+2. Launch with Steam Launch Options OR command line:
+   `--server-url wss://${stagingServerHost}:${stagingWsPort}`
+3. Run the BVT scenarios.
+4. If pass: click **Confirm in Jenkins** below.
+5. After Jenkins promote succeeds, click *Set Live* in Steamworks."""
+
+                            discordNotify.awaitingApproval(
+                                title: "${config.jobName} #${BUILD_NUMBER} awaiting promote",
+                                message: "Server **${env.STAGING_SERVER_VERSION}** has been deployed to staging and is ready for BVT. Once BVT passes, click Confirm to flip production.",
+                                jobName: config.jobName,
+                                jenkinsUrl: jenkinsBase,
+                                environment: 'production',
+                                version: env.STAGING_SERVER_VERSION,
+                                bvtArtifactUrl: bvtUrl,
+                                instructionsField: checklist
                             )
                         }
                     }
