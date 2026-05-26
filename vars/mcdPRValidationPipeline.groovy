@@ -147,6 +147,7 @@ def call(Map config) {
                         env.SERVER_CHANGED = changes.serverChanged.toString()
                         env.CLIENT_CHANGED = changes.clientChanged.toString()
                         env.MCP_GAME_SERVER_CHANGED = changes.mcpGameServerChanged.toString()
+                        env.DETERMINISM_HARNESS_CHANGED = changes.determinismHarnessChanged.toString()
                         // Per-Go-module flags drive the 'Per-module Go tests' stage.
                         env.AUTH_CHANGED = changes.authChanged.toString()
                         env.ACCOUNT_SERVICE_CHANGED = changes.accountServiceChanged.toString()
@@ -155,10 +156,24 @@ def call(Map config) {
                         env.SHARED_CHANGED = changes.sharedChanged.toString()
                         env.CRASH_REPORTING_CHANGED = changes.crashReportingChanged.toString()
                         env.MCP_SERVER_CHANGED = changes.mcpServerChanged.toString()
+                        if (config.determinismHarness?.enabled) {
+                            def cadences = config.determinismHarness.cadences ?: [:]
+                            def wireFormatChanged = mcdDeterminismHarness.cadenceMatches(changes.changedFiles, cadences.wireFormat ?: [:])
+                            env.DETERMINISM_WIRE_FORMAT_CHANGED = wireFormatChanged.toString()
+                            // A protocol_ext.h-only PR uses the special wire-format
+                            // cadence so a deliberate PROTOCOL_VERSION bump can pass
+                            // by failing old logs with exit 3.
+                            def perPrChanged = mcdDeterminismHarness.cadenceMatches(changes.changedFiles, cadences.perPr ?: [:])
+                            env.DETERMINISM_PER_PR_CHANGED = (!wireFormatChanged && (perPrChanged || changes.determinismHarnessChanged)).toString()
+                        } else {
+                            env.DETERMINISM_PER_PR_CHANGED = 'false'
+                            env.DETERMINISM_WIRE_FORMAT_CHANGED = 'false'
+                        }
 
                         def parts = []
                         if (changes.serverChanged) parts << 'server'
                         if (changes.clientChanged) parts << 'client'
+                        if (changes.determinismHarnessChanged) parts << 'determinism-harness'
                         // Only call out MCP separately when it isn't already
                         // implied by a 'server' build (the wire-drift gate via
                         // Src/Include/ sets both flags).
@@ -482,6 +497,42 @@ def call(Map config) {
                 post {
                     failure {
                         archiveArtifacts artifacts: 'reports/mcp-game-server/**', allowEmptyArchive: true, fingerprint: true
+                    }
+                }
+            }
+
+            stage('determinism-harness-replay') {
+                // Runs inside mcd-build-agent, the existing Linux + Godot CI
+                // agent image. ADR mc-lf0 pins v1 to Linux, not cross-arch.
+                when {
+                    expression {
+                        env.PR_ALREADY_MERGED != 'true' &&
+                        config.determinismHarness?.enabled == true &&
+                        (env.DETERMINISM_PER_PR_CHANGED == 'true' || env.DETERMINISM_WIRE_FORMAT_CHANGED == 'true')
+                    }
+                }
+                steps {
+                    script {
+                        def cadenceKeys = []
+                        if (env.DETERMINISM_WIRE_FORMAT_CHANGED == 'true') {
+                            cadenceKeys << 'wireFormat'
+                        }
+                        if (env.DETERMINISM_PER_PR_CHANGED == 'true') {
+                            cadenceKeys << 'perPr'
+                        }
+                        mcdDeterminismHarness.runPrCadences(config.determinismHarness, cadenceKeys)
+                    }
+                }
+                post {
+                    always {
+                        script {
+                            try {
+                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: config.determinismHarness?.junitGlob ?: 'test-results/determinism-harness/**/*.xml'
+                            } catch (NoSuchMethodError e) {
+                                echo "JUnit plugin not installed - skipping determinism harness report publishing"
+                            }
+                            archiveArtifacts artifacts: 'test-results/determinism-harness/**', allowEmptyArchive: true, fingerprint: true
+                        }
                     }
                 }
             }

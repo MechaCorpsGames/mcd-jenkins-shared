@@ -9,7 +9,7 @@
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
  *         monitoringChanged, crashReportingChanged,
  *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
- *         dockerSmokeChanged, mcpGameServerChanged,
+ *         dockerSmokeChanged, mcpGameServerChanged, determinismHarnessChanged,
  *         proxyChanged, sharedChanged, mcpServerChanged,
  *         changedFiles (list)
  *
@@ -34,7 +34,7 @@ def detect(String baseRef) {
                 crashReportingChanged: true, accountServiceChanged: true,
                 auctionHouseChanged: true, discordBotChanged: true,
                 dockerSmokeChanged: true,
-                mcpGameServerChanged: true,
+                mcpGameServerChanged: true, determinismHarnessChanged: true,
                 proxyChanged: true, sharedChanged: true, mcpServerChanged: true,
                 changedFiles: []]
     }
@@ -54,6 +54,7 @@ def detect(String baseRef) {
     def discordBotChanged = false
     def dockerSmokeChanged = false
     def mcpGameServerChanged = false
+    def determinismHarnessChanged = false
     // Per-Go-module flags (independent of categorize(); see method doc)
     def proxyChanged = false
     def sharedChanged = false
@@ -69,6 +70,9 @@ def detect(String baseRef) {
         if (file.startsWith('Src/Proxy/')) proxyChanged = true
         if (file.startsWith('Src/Shared/')) sharedChanged = true
         if (file.startsWith('Src/MCPServer/')) mcpServerChanged = true
+        if (file.startsWith('tests/determinism-harness/') || file.startsWith('Src/TestClient/Test/replay/')) {
+            determinismHarnessChanged = true
+        }
 
         def category = categorize(file)
         switch (category) {
@@ -147,7 +151,7 @@ def detect(String baseRef) {
         mcpServerChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged}, mcpGameServer=${mcpGameServerChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged} ==="
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged}, mcpGameServer=${mcpGameServerChanged}, determinismHarness=${determinismHarnessChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
@@ -157,6 +161,7 @@ def detect(String baseRef) {
             discordBotChanged: discordBotChanged,
             dockerSmokeChanged: dockerSmokeChanged,
             mcpGameServerChanged: mcpGameServerChanged,
+            determinismHarnessChanged: determinismHarnessChanged,
             proxyChanged: proxyChanged,
             sharedChanged: sharedChanged,
             mcpServerChanged: mcpServerChanged,
