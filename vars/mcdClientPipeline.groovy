@@ -710,6 +710,38 @@ EOF
                 }
             }
 
+            // Auto-publish to Steam. Gated on config.steamBranch so this is a
+            // complete no-op on any pipeline that doesn't opt in — the branch
+            // Jenkinsfiles arm it (features/backend→backend, features/card→card,
+            // main→main, release→staging). We hand off to the standalone
+            // MCDSteam-Upload job (which runs in a container with steamcmd + the
+            // Steam content cache mounted and reads THIS build's just-archived
+            // artifacts by job+build number). Fire-and-forget: wait:false so the
+            // client build doesn't block on the upload, propagate:false so a
+            // Steam hiccup never reds an otherwise-good build — MCDSteam-Upload
+            // has its own Discord success/failure notifications. The upload job
+            // routes 'default' (public) to upload-only; all other branches are
+            // set live on their beta automatically.
+            stage('Publish to Steam') {
+                when {
+                    expression { env.CLIENT_CHANGED == 'true' && config.steamBranch }
+                }
+                steps {
+                    script {
+                        env.BUILD_PHASE = 'Publish to Steam'
+                        build job: 'MCDSteam-Upload',
+                            parameters: [
+                                string(name: 'SOURCE_JOB', value: config.jobName),
+                                string(name: 'SOURCE_BUILD', value: env.BUILD_NUMBER),
+                                string(name: 'STEAM_BRANCH', value: config.steamBranch)
+                            ],
+                            wait: false,
+                            propagate: false
+                        echo "Triggered MCDSteam-Upload: ${config.jobName} #${env.BUILD_NUMBER} -> Steam branch '${config.steamBranch}'"
+                    }
+                }
+            }
+
             stage('Upload Debug Symbols') {
                 when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
