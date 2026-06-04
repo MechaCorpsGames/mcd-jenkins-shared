@@ -137,7 +137,12 @@ def call(Map config) {
                         cp steam/depot_windows.vdf steam_build/
                         cp steam/depot_linux.vdf steam_build/
 
-                        sed -i "s/__DESCRIPTION__/v${CLIENT_VERSION} from ${SOURCE_BRANCH} (${SOURCE_COMMIT})/g" \
+                        # Use '|' as the sed delimiter, NOT '/': the git SOURCE_BRANCH
+                        # can contain a slash (e.g. features/card, features/backend),
+                        # which breaks an s/.../.../ expression ("unknown option to `s'")
+                        # and kills the upload before steamcmd runs. Branch names and
+                        # commit hashes never contain '|', so it's a safe delimiter.
+                        sed -i "s|__DESCRIPTION__|v${CLIENT_VERSION} from ${SOURCE_BRANCH} (${SOURCE_COMMIT})|g" \
                             steam_build/app_build.vdf
 
                         # Route the chosen Steam branch into setlive so the upload goes
@@ -150,7 +155,7 @@ def call(Map config) {
                         else
                             echo "STEAM_BRANCH=\$SETLIVE_BRANCH -> build will be set live on this beta branch"
                         fi
-                        sed -i "s/__SETLIVE__/\$SETLIVE_BRANCH/g" steam_build/app_build.vdf
+                        sed -i "s|__SETLIVE__|\$SETLIVE_BRANCH|g" steam_build/app_build.vdf
 
                         echo "=== Steam build VDF ==="
                         cat steam_build/app_build.vdf
