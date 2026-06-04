@@ -31,7 +31,7 @@ def call(Map config) {
             )
             choice(
                 name: 'STEAM_BRANCH',
-                choices: ['staging', 'alpha', 'main', 'backend', 'card', 'default'],
+                choices: ['staging', 'main', 'backend', 'card', 'default'],
                 description: "Steam beta branch to set the build live on. 'default' = public branch: the build uploads but is NOT set live (flip it manually in Steamworks)."
             )
         }
