@@ -9,7 +9,7 @@
  * @return Map with: serverChanged, clientChanged, authChanged, wikiChanged,
  *         monitoringChanged, crashReportingChanged,
  *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
- *         dockerSmokeChanged, mcpGameServerChanged,
+ *         dockerSmokeChanged, mcpGameServerChanged, tagsChanged,
  *         proxyChanged, sharedChanged, mcpServerChanged,
  *         changedFiles (list)
  *
@@ -35,6 +35,7 @@ def detect(String baseRef) {
                 auctionHouseChanged: true, discordBotChanged: true,
                 dockerSmokeChanged: true,
                 mcpGameServerChanged: true,
+                tagsChanged: true,
                 proxyChanged: true, sharedChanged: true, mcpServerChanged: true,
                 changedFiles: []]
     }
@@ -54,6 +55,7 @@ def detect(String baseRef) {
     def discordBotChanged = false
     def dockerSmokeChanged = false
     def mcpGameServerChanged = false
+    def tagsChanged = false
     // Per-Go-module flags (independent of categorize(); see method doc)
     def proxyChanged = false
     def sharedChanged = false
@@ -69,6 +71,13 @@ def detect(String baseRef) {
         if (file.startsWith('Src/Proxy/')) proxyChanged = true
         if (file.startsWith('Src/Shared/')) sharedChanged = true
         if (file.startsWith('Src/MCPServer/')) mcpServerChanged = true
+        if (file == 'Data/References/Tags.json' ||
+            file.startsWith('Data/Cards/') ||
+            file == 'Src/Tools/GenerateTags.py' ||
+            file == 'Src/Tools/CheckTagsRegistered.py' ||
+            file == 'scripts/check_tag_register.py') {
+            tagsChanged = true
+        }
 
         def category = categorize(file)
         switch (category) {
@@ -147,7 +156,7 @@ def detect(String baseRef) {
         mcpServerChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged}, mcpGameServer=${mcpGameServerChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged} ==="
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged}, mcpGameServer=${mcpGameServerChanged}, tags=${tagsChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
@@ -157,6 +166,7 @@ def detect(String baseRef) {
             discordBotChanged: discordBotChanged,
             dockerSmokeChanged: dockerSmokeChanged,
             mcpGameServerChanged: mcpGameServerChanged,
+            tagsChanged: tagsChanged,
             proxyChanged: proxyChanged,
             sharedChanged: sharedChanged,
             mcpServerChanged: mcpServerChanged,

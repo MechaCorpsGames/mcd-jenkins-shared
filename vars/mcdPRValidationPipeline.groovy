@@ -147,6 +147,7 @@ def call(Map config) {
                         env.SERVER_CHANGED = changes.serverChanged.toString()
                         env.CLIENT_CHANGED = changes.clientChanged.toString()
                         env.MCP_GAME_SERVER_CHANGED = changes.mcpGameServerChanged.toString()
+                        env.TAGS_CHANGED = changes.tagsChanged.toString()
                         // Per-Go-module flags drive the 'Per-module Go tests' stage.
                         env.AUTH_CHANGED = changes.authChanged.toString()
                         env.ACCOUNT_SERVICE_CHANGED = changes.accountServiceChanged.toString()
@@ -165,6 +166,28 @@ def call(Map config) {
                         if (changes.mcpGameServerChanged && !changes.serverChanged) parts << 'mcp-game-server'
                         def scope = parts ? parts.join(' + ') : 'no builds needed'
                         currentBuild.description += "\nBuilds: ${scope}"
+                    }
+                }
+            }
+
+            stage('Tags Register Gate') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.TAGS_CHANGED == 'true' } }
+                steps {
+                    script {
+                        setGitHubStatus('pending', 'Checking tag registry', 'jenkins/tags-register-gate')
+                    }
+                    sh 'make check-tags-registered'
+                }
+                post {
+                    success {
+                        script {
+                            setGitHubStatus('success', 'Tag registry valid', 'jenkins/tags-register-gate')
+                        }
+                    }
+                    failure {
+                        script {
+                            setGitHubStatus('failure', 'Tag registry check failed - see console', 'jenkins/tags-register-gate')
+                        }
                     }
                 }
             }
