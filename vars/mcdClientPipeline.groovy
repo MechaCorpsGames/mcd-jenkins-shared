@@ -490,18 +490,60 @@ def call(Map config) {
                                 string(credentialsId: 'android-upload-keystore-alias', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_USER'),
                                 string(credentialsId: 'android-upload-keystore-password', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD')
                             ]) {
-                                sh """
+                                sh '''
                                     echo "Exporting Android AAB (Play Store format)..."
+
+                                    # Godot's gradle build (use_gradle_build=true) needs the Android
+                                    # build template in res://android/build/. It is .gitignored, so
+                                    # install it from the export templates matching this Godot build.
+                                    GODOT_VER=$(godot --version 2>/dev/null | sed -E 's/\\.(official|custom_build|mono).*$//')
+                                    TPL_DIR="$HOME/.local/share/godot/export_templates/$GODOT_VER"
+                                    if [ ! -f android/build/build.gradle ]; then
+                                        echo "Installing Android build template ($GODOT_VER)..."
+                                        mkdir -p android/build
+                                        unzip -o -q "$TPL_DIR/android_source.zip" -d android/build/
+                                    fi
+                                    touch android/.gdignore
+                                    # Version marker Godot validates the template against.
+                                    printf '%s' "$GODOT_VER" > android/.build_version
+                                    printf '%s' "$GODOT_VER" > android/build/.build_version
+
+                                    # Godot 4.6 export validation rejects an env-var-only release
+                                    # keystore, so write it into the preset transiently, then restore
+                                    # (drops the password back out of the workspace afterwards).
+                                    cp export_presets.cfg /tmp/ep.play.bak
+                                    python3 - <<'PY'
+import os
+path = os.environ["GODOT_ANDROID_KEYSTORE_RELEASE_PATH"]
+user = os.environ["GODOT_ANDROID_KEYSTORE_RELEASE_USER"]
+pw   = os.environ["GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD"]
+f = "export_presets.cfg"
+lines = open(f).read().splitlines()
+out, ins = [], False
+for l in lines:
+    out.append(l)
+    if l.strip() == "[preset.2.options]" and not ins:
+        out += ['keystore/release="%s"' % path,
+                'keystore/release_user="%s"' % user,
+                'keystore/release_password="%s"' % pw]
+        ins = True
+open(f, "w").write("\\n".join(out) + "\\n")
+print("keystore written into preset.2.options:", ins)
+PY
+
                                     godot --headless --export-release "Android" exports/MechaCorpsDraft.aab 2>&1 || true
+
+                                    cp /tmp/ep.play.bak export_presets.cfg
+
                                     if [ ! -f exports/MechaCorpsDraft.aab ]; then
                                         echo "Android export failed. Checklist:"
                                         echo "  - export_presets.cfg: gradle_build/use_gradle_build=true, export_format=1"
-                                        echo "  - Android SDK at \$ANDROID_SDK_ROOT, NDK at \$ANDROID_NDK_HOME"
-                                        echo "  - Godot Android build template installed in export_templates dir"
+                                        echo "  - Android build template + .build_version present (auto-installed above)"
+                                        echo "  - SDK 35 / build-tools 35.0.1 present in the agent image"
                                         echo "  - Upload keystore credential android-upload-keystore accessible"
                                         exit 1
                                     fi
-                                """
+                                '''
                             }
                         } else {
                             echo "Skipping Android AAB export (no upload keystore)."

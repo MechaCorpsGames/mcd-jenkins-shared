@@ -36,8 +36,13 @@ RUN yes | ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --licenses > /
     ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager \
         "platform-tools" \
         "platforms;android-34" \
+        "platforms;android-35" \
         "build-tools;34.0.0" \
+        "build-tools;35.0.1" \
         "ndk;26.1.10909125"
+# android-35 + build-tools 35.0.1: the Godot 4.6 Android gradle build template
+# targets SDK 35; gradle cannot auto-install them at runtime (/opt/android-sdk is
+# not writable by the build user), so they must be present in the image.
 
 ENV ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/26.1.10909125
 
