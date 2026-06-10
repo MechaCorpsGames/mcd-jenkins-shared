@@ -90,6 +90,19 @@ RUN dpkg --add-architecture i386 && \
         | tar -xz -C /opt/steamcmd && \
     /opt/steamcmd/steamcmd.sh +quit || true
 
+# ── Layer 5c: fastlane (Google Play upload via `supply`) ──────────────────────
+# Used by mcdPlayUploadPipeline to push AABs to Play tracks through the Android
+# Publisher API. build-essential (layer 1) lets the native gems compile.
+# fastlane aborts at startup unless the locale is UTF-8.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ruby ruby-dev libffi-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && gem install --no-document fastlane \
+    && fastlane --version
+# NOTE: fastlane is intentionally unpinned for the first image build. Once a build
+# is green, pin it here (e.g. `gem install fastlane -v 2.x.y`) for reproducibility.
+
 # ── Layer 6: Jenkins user (UID/GID matching host) ─────────────────────────────
 RUN groupadd -g 112 jenkins && \
     useradd -u 103 -g 112 -m -d /home/jenkins -s /bin/bash jenkins && \

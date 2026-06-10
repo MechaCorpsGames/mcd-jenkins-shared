@@ -440,15 +440,33 @@ def call(Map config) {
                         }
                     }
 
+                    script {
+                        // Globally-monotonic Android versionCode.
+                        // Play requires versionCode to be unique AND strictly increasing per
+                        // package across ALL tracks. BUILD_NUMBER is per-job, so MCDClient-Main
+                        // and MCDClient-Release (independent counters) would eventually collide
+                        // on Play and get rejected. Derive it from epoch-minutes (fits a 32-bit
+                        // int for centuries) plus a small per-lane offset so two jobs building in
+                        // the same minute can't tie. Lane: Release=0, Main=1, FeatureBackend=2,
+                        // FeatureCard=3, other=4.
+                        long epochMin = (sh(script: 'date +%s', returnStdout: true).trim().toLong()).intdiv(60)
+                        int lane = env.JOB_NAME?.contains('Release') ? 0 :
+                                   env.JOB_NAME?.contains('FeatureBackend') ? 2 :
+                                   env.JOB_NAME?.contains('FeatureCard') ? 3 :
+                                   env.JOB_NAME?.contains('Main') ? 1 : 4
+                        env.ANDROID_VERSION_CODE = ((epochMin * 8L) + lane).toString()
+                        echo "Android versionCode=${env.ANDROID_VERSION_CODE} (lane ${lane}), versionName=${env.CLIENT_VERSION}"
+                    }
+
                     sh """
                         mkdir -p exports
 
-                        # Inject monotonic version code + human-readable version name
-                        # into the Android preset so Play Store won't reject duplicate uploads.
-                        # Play requires versionCode to be a strictly-increasing integer.
-                        sed -i "s|^version/code=.*|version/code=${BUILD_NUMBER}|" export_presets.cfg
+                        # Inject the globally-monotonic version code (computed in the script
+                        # block above) + the human-readable version name into the Android preset
+                        # so Play won't reject duplicate uploads.
+                        sed -i "s|^version/code=.*|version/code=${ANDROID_VERSION_CODE}|" export_presets.cfg
                         sed -i "s|^version/name=.*|version/name=\\"${CLIENT_VERSION}\\"|" export_presets.cfg
-                        echo "Android versionCode=${BUILD_NUMBER}, versionName=${CLIENT_VERSION}"
+                        echo "Android versionCode=${ANDROID_VERSION_CODE}, versionName=${CLIENT_VERSION}"
 
                         echo "Exporting Windows build..."
                         godot --headless --export-release "Windows Desktop" exports/MechaCorpsDraft.exe 2>&1 || true
@@ -668,7 +686,7 @@ EOF
             "download": "MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab",
             "package": "com.mechacorpsgames.mechacorpsdraft",
             "format": "aab",
-            "versionCode": ${BUILD_NUMBER}
+            "versionCode": ${ANDROID_VERSION_CODE}
         }""" : ""
 
                         sh """
