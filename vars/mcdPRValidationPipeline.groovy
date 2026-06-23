@@ -256,6 +256,25 @@ def call(Map config) {
                 }
             }
 
+            // Static guard for the Validated Card Data Pipeline (plan §5 C2):
+            // fails the PR if runtime/test code references authoring card data
+            // (Data/Cards/ or Data/References/) instead of the generated
+            // Data/GameData/ output. Pure Python, no deps; runs before any build
+            // so it fails fast. File-existence guard keeps it a no-op on branches
+            // that predate the script (mirrors the case check above).
+            stage('Authoring Data Reference Check') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        if [ -f scripts/check_authoring_data_refs.py ]; then
+                            make check-authoring-refs
+                        else
+                            echo "scripts/check_authoring_data_refs.py not present on this branch, skipping"
+                        fi
+                    '''
+                }
+            }
+
             stage('Setup Dependencies') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
                 steps {
