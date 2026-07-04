@@ -23,6 +23,31 @@ def lookupDiscordId(String githubUser) {
 }
 
 /**
+ * POST a payload to the Discord webhook.
+ *
+ * Safe to call with or without a node context: declarative post{} blocks
+ * run without a workspace when agent provisioning fails (e.g. the build
+ * image is missing), which used to crash writeFile with
+ * MissingContextVariableException — marking the build red AND silently
+ * dropping the very notification that should have reported it. When no
+ * FilePath context is available, grab the built-in node just long enough
+ * to fire the webhook.
+ */
+def sendPayload(String payload) {
+    try {
+        writeFile file: '.discord_payload.json', text: payload
+        sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
+        sh 'rm -f .discord_payload.json'
+    } catch (org.jenkinsci.plugins.workflow.steps.MissingContextVariableException e) {
+        node {
+            writeFile file: '.discord_payload.json', text: payload
+            sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
+            sh 'rm -f .discord_payload.json'
+        }
+    }
+}
+
+/**
  * Send a simple Discord notification (for in-progress updates)
  * Optional: pass githubUser to @ mention them.
  */
@@ -35,9 +60,7 @@ def simple(String message, String color, String githubUser = null) {
         mentionsField = ""","allowed_mentions":{"users":["${discordId}"]}"""
     }
     def payload = """{${contentField}"embeds":[{"description":"${message}","color":${color}}]${mentionsField}}"""
-    writeFile file: '.discord_payload.json', text: payload
-    sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
-    sh 'rm -f .discord_payload.json'
+    sendPayload(payload)
 }
 
 /**
@@ -104,9 +127,7 @@ def success(Map config) {
             ]
         }]
     }"""
-    writeFile file: '.discord_payload.json', text: payload
-    sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
-    sh 'rm -f .discord_payload.json'
+    sendPayload(payload)
 }
 
 /**
@@ -153,9 +174,7 @@ def failure(Map config) {
             ]
         }]${mentionsField}
     }"""
-    writeFile file: '.discord_payload.json', text: payload
-    sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
-    sh 'rm -f .discord_payload.json'
+    sendPayload(payload)
 }
 
 /**
@@ -239,9 +258,7 @@ def awaitingApproval(Map config) {
             "components": [${buttonsJson}]
         }]${mentionsField}
     }"""
-    writeFile file: '.discord_payload.json', text: payload
-    sh 'curl -s -X POST -H "Content-Type: application/json" -d @.discord_payload.json $DISCORD_WEBHOOK || true'
-    sh 'rm -f .discord_payload.json'
+    sendPayload(payload)
 }
 
 return this
