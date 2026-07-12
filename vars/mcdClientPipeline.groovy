@@ -235,6 +235,23 @@ def call(Map config) {
                 }
             }
 
+            // Validated Card Data Pipeline (MCDClient bead mc-8ko, plan §4):
+            // the MCDCoreExt Linux Debug build above exports Data/GameData/ via
+            // build.py; validate that generated tree before the GDScript tests
+            // (which load the runtime card library from it) run. Regenerate first
+            // so the stage is self-contained. Gated on config.validateGameData so
+            // it is inert unless a branch opts in (main/release unaffected while
+            // the corpus is cleaned up — plan §7).
+            stage('Validate GameData') {
+                when {
+                    expression { env.CLIENT_CHANGED == 'true' && config.validateGameData }
+                }
+                steps {
+                    sh 'make export-done || echo "[Validate GameData] export-done target missing on this branch — skipping"'
+                    mcdValidateGameData(hardFail: config.validateGameDataHardFail ?: false)
+                }
+            }
+
             // After Linux Debug, run tests + remaining builds in parallel.
             // Each platform uses a separate build directory so there are no conflicts.
             stage('Cross-platform Builds & Tests') {

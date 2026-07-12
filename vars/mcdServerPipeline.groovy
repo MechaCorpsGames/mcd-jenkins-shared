@@ -225,6 +225,22 @@ def call(Map config) {
                 }
             }
 
+            // Validated Card Data Pipeline (MCDClient bead mc-8ko, plan §4):
+            // validate the *generated* Data/GameData/ tree right after it is
+            // populated and before any consumer (Unit Tests / packaging) runs.
+            // Gated on config.validateGameData so it is inert for pipelines that
+            // do not opt in (main/release stay unaffected while the corpus is
+            // cleaned up — plan §7). config.validateGameDataHardFail flips it from
+            // a soft (UNSTABLE) gate to a blocking one.
+            stage('Validate GameData') {
+                when {
+                    expression { env.SERVER_CHANGED == 'true' && config.validateGameData }
+                }
+                steps {
+                    mcdValidateGameData(hardFail: config.validateGameDataHardFail ?: false)
+                }
+            }
+
             stage('Unit Tests') {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
