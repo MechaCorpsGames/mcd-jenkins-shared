@@ -275,6 +275,27 @@ def call(Map config) {
                 }
             }
 
+            // Unit tests for the six-KPI log parser (scripts/bot_kpis.py).
+            // The parser's format contract with the server's combat-log
+            // markers is pinned on the C++ side by CombatLogMarkersTest (in
+            // MCDServerTest); this stage covers the python side. Pure Python
+            // stdlib, sub-second; gated on either scope because the contract
+            // spans server (marker emission) and client/scripts (parsing).
+            // File-existence guard keeps it a no-op on branches that predate
+            // the script (mirrors the checks above).
+            stage('Bot KPI Parser Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
+                steps {
+                    sh '''
+                        if [ -f scripts/test_bot_kpis.py ]; then
+                            python3 scripts/test_bot_kpis.py
+                        else
+                            echo "scripts/test_bot_kpis.py not present on this branch, skipping"
+                        fi
+                    '''
+                }
+            }
+
             stage('Setup Dependencies') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
                 steps {
