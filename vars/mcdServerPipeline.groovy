@@ -618,29 +618,38 @@ ENVEOF
                                 docker rm -f ${containerName} 2>/dev/null || true
 
                                 # Src/Proxy/Dockerfile COMPILES the proxy from its build
-                                # context, and that context is /var/opt/mechacorpsgames/Src
-                                # (the compose project dir) — NOT this build's workspace.
-                                # Nothing has ever refreshed that tree: it sat at
-                                # cc5fee0a/2026-05-01 while every build here reported
-                                # "proxy container restarted successfully", so months of
-                                # proxy commits were compiled out of a stale checkout and
-                                # never shipped. The 'bin/MCDProxy' this pipeline builds,
-                                # tests and hashes was only ever a change-detection marker;
-                                # no image or mount consumed it.
+                                # context, and 'docker compose build' takes that context
+                                # from the compose project dir (/var/opt/mechacorpsgames/Src)
+                                # — NOT this build's workspace. Nothing has ever refreshed
+                                # that tree: it sat at cc5fee0a/2026-05-01 while every build
+                                # here reported "proxy container restarted successfully", so
+                                # months of proxy commits were compiled out of a stale
+                                # checkout and never shipped. The 'bin/MCDProxy' this
+                                # pipeline builds, tests and hashes was only ever a
+                                # change-detection marker; no image or mount consumed it.
                                 #
-                                # Sync the proxy's build inputs from the workspace so the
-                                # image is compiled from the commit we just tested. Kept as
-                                # a sync into the existing project dir rather than moving
-                                # the build context, so the compose project directory (and
-                                # therefore container identity for every other compose
-                                # invocation on this host) does not change.
-                                rsync -a --delete Src/Proxy/ /var/opt/mechacorpsgames/Src/Proxy/
-                                rsync -a --delete Src/Shared/ /var/opt/mechacorpsgames/Src/Shared/
-                                cp Src/docker-compose.proxy.yml /var/opt/mechacorpsgames/Src/docker-compose.proxy.yml
+                                # Build the image straight from the workspace and tag it
+                                # exactly what compose would have produced, then bring the
+                                # service up with --no-build so compose adopts that image
+                                # instead of compiling its own. The project dir is left
+                                # alone: it is shared with other services and owned by
+                                # another user, so writing into it is both a cross-service
+                                # side effect and a permission failure waiting to happen.
+                                docker build \\
+                                    --no-cache \\
+                                    --build-arg GIT_COMMIT='${proxyCommit}' \\
+                                    -f Src/Proxy/Dockerfile \\
+                                    -t ${composeProject}-proxy:latest \\
+                                    Src
 
-                                cd /var/opt/mechacorpsgames/Src
-                                GIT_COMMIT='${proxyCommit}' docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} build --no-cache proxy
-                                GIT_COMMIT='${proxyCommit}' docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --force-recreate proxy
+                                # Compose DEFINITION from the workspace (so command args and
+                                # mounts track the branch) but project dir unchanged (so
+                                # container identity and relative paths do not move).
+                                docker compose -p ${composeProject} \\
+                                    --project-directory /var/opt/mechacorpsgames/Src \\
+                                    -f "\$(pwd)/Src/docker-compose.proxy.yml" \\
+                                    --env-file /var/opt/mechacorpsgames/Src/${envFile} \\
+                                    up -d --force-recreate --no-build proxy
 
                                 sleep 3
                                 if docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
