@@ -577,6 +577,12 @@ ENVEOF
                         """
                         def containerName = "${composeProject}-proxy-1"
 
+                        // The commit the proxy image must be built from. Read from the
+                        // workspace rather than env.GIT_COMMIT: this pipeline performs
+                        // several checkouts (main + the target branch), so the env var
+                        // does not reliably name the branch we just built.
+                        def proxyCommit = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
+
                         def newHash = sh(script: "sha256sum bin/MCDProxy | cut -d' ' -f1", returnStdout: true).trim()
                         def oldHash = sh(script: "sha256sum ${config.deployPath}/MCDProxy 2>/dev/null | cut -d' ' -f1 || echo 'none'", returnStdout: true).trim()
                         def binaryChanged = (newHash != oldHash)
@@ -611,19 +617,56 @@ ENVEOF
                                 done
                                 docker rm -f ${containerName} 2>/dev/null || true
 
-                                if [ "${binaryChanged}" = "true" ]; then
-                                    rm -f ${config.deployPath}/MCDProxy
-                                    cp bin/MCDProxy ${config.deployPath}/MCDProxy
-                                    chmod +x ${config.deployPath}/MCDProxy
-                                fi
+                                # Src/Proxy/Dockerfile COMPILES the proxy from its build
+                                # context, and that context is /var/opt/mechacorpsgames/Src
+                                # (the compose project dir) — NOT this build's workspace.
+                                # Nothing has ever refreshed that tree: it sat at
+                                # cc5fee0a/2026-05-01 while every build here reported
+                                # "proxy container restarted successfully", so months of
+                                # proxy commits were compiled out of a stale checkout and
+                                # never shipped. The 'bin/MCDProxy' this pipeline builds,
+                                # tests and hashes was only ever a change-detection marker;
+                                # no image or mount consumed it.
+                                #
+                                # Sync the proxy's build inputs from the workspace so the
+                                # image is compiled from the commit we just tested. Kept as
+                                # a sync into the existing project dir rather than moving
+                                # the build context, so the compose project directory (and
+                                # therefore container identity for every other compose
+                                # invocation on this host) does not change.
+                                rsync -a --delete Src/Proxy/ /var/opt/mechacorpsgames/Src/Proxy/
+                                rsync -a --delete Src/Shared/ /var/opt/mechacorpsgames/Src/Shared/
+                                cp Src/docker-compose.proxy.yml /var/opt/mechacorpsgames/Src/docker-compose.proxy.yml
 
                                 cd /var/opt/mechacorpsgames/Src
-                                docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} build --no-cache proxy
-                                docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --force-recreate proxy
+                                GIT_COMMIT='${proxyCommit}' docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} build --no-cache proxy
+                                GIT_COMMIT='${proxyCommit}' docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --force-recreate proxy
 
                                 sleep 3
                                 if docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
-                                    echo "✓ ${config.environment} proxy container restarted successfully"
+                                    # Provenance gate. The image stamps the commit it was
+                                    # built from (Src/Proxy/Dockerfile LABEL). If the running
+                                    # container does not carry the commit this build tested,
+                                    # the image came from somewhere else — fail loudly here
+                                    # rather than let another silent-stale-proxy month pass.
+                                    want='${proxyCommit}'
+                                    got=\$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' ${containerName} 2>/dev/null || echo '')
+                                    if [ -n "\$want" ] && [ "\$got" != "\$want" ]; then
+                                        echo "✗ Proxy image provenance mismatch for ${config.environment}"
+                                        echo "  expected commit: \$want"
+                                        echo "  running image:   \${got:-<unstamped>}"
+                                        echo "  The proxy image was NOT built from this commit — see the build-context sync above."
+                                        exit 1
+                                    fi
+                                    echo "✓ ${config.environment} proxy container restarted successfully (commit \${got:-<unstamped>})"
+
+                                    # Marker LAST: it is the change-detection input for the
+                                    # next build, so writing it before the container is
+                                    # verified would make a failed deploy look up-to-date
+                                    # and skip the retry forever.
+                                    rm -f ${config.deployPath}/MCDProxy
+                                    cp bin/MCDProxy ${config.deployPath}/MCDProxy
+                                    chmod +x ${config.deployPath}/MCDProxy
                                     echo "${configHash}" > /tmp/.mcd-proxy-config-hash-${composeProject}
                                 else
                                     echo "✗ Failed to start proxy container"
