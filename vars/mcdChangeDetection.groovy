@@ -200,8 +200,12 @@ def categorize(String filePath) {
     // Go shared library (affects Proxy, Auth, CrashReporting, MCPServer)
     if (filePath.startsWith('Src/Shared/')) return 'services-shared'
 
-    // Server-only paths
-    def serverPrefixes = ['Src/GameServer/', 'Src/Proxy/', 'Src/TestClient/']
+    // Server-only paths. Src/BotArena/ is here because the WASM arena bots
+    // are built ('make wasm-bots') and deployed by mcdServerPipeline's
+    // 'Build WASM Bots' / 'Deploy Bots' stages — before this entry,
+    // arena-only changes fell to the unknown-files fallback, which ALSO set
+    // clientChanged and burned a full client build + publish on a Go bot edit.
+    def serverPrefixes = ['Src/GameServer/', 'Src/Proxy/', 'Src/TestClient/', 'Src/BotArena/']
     for (prefix in serverPrefixes) {
         if (filePath.startsWith(prefix)) return 'server'
     }
