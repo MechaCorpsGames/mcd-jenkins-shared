@@ -252,6 +252,25 @@ def call(Map config) {
                 }
             }
 
+            // Hermetic build (MCDClient bead mc-0xm, plan §5, Scenario 3): with
+            // the generated data exported and validated, relocate the AUTHORING
+            // data (Data/Cards + Data/References) out of the workspace. The
+            // GDScript tests below then prove the client reads generated
+            // Data/GameData/ only, and 'Export Game Executables' physically
+            // cannot pack authoring JSON into the shipped .pck. The MCDCoreExt
+            // Release/Windows/Android builds below auto-run export_done_cards.py
+            // after install; it no-ops loudly on the strip marker. Gated on
+            // config.stripAuthoringData (features/card first). The build
+            // finishes stripped; the next build's checkout restores the tree.
+            stage('Strip Authoring Data') {
+                when {
+                    expression { env.CLIENT_CHANGED == 'true' && config.stripAuthoringData }
+                }
+                steps {
+                    mcdStripAuthoringData()
+                }
+            }
+
             // After Linux Debug, run tests + remaining builds in parallel.
             // Each platform uses a separate build directory so there are no conflicts.
             stage('Cross-platform Builds & Tests') {
