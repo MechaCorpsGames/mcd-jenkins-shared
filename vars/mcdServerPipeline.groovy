@@ -579,6 +579,35 @@ BOT_PASSWORD=${config.botPassword ?: ''}
 GAUNTLET_INSTANT_RESOLVE=${config.gauntletInstantResolve ?: ''}
 ENVEOF
                         """
+                        // Practice bots are spawned from BOT_PROJECT_ROOT, published by
+                        // mcdClientPipeline's "Publish Bot Runtime" stage in a DIFFERENT
+                        // job. Nothing ties the two together, so when an env's
+                        // botProjectPath is wrong or that stage is skipped, the tree
+                        // silently rots: the bot then loses the protocol handshake and
+                        // every play-vs-bot match on the env fails, while this pipeline
+                        // reports a clean deploy. GH #2188 — release-staging sat on the
+                        // 2026-07-14 build (protocol v41) against a v43 server for 12
+                        // days. Warn rather than fail: a stale bot runtime does not
+                        // affect human-vs-human matches.
+                        sh """
+                            BOT_EXT="${botProjectPath}/bin/lib/Linux-x86_64/libMCDCoreExt-d.so"
+                            if [ ! -f "\$BOT_EXT" ]; then
+                                echo "⚠️ BOT RUNTIME MISSING: \$BOT_EXT — play-vs-bot will not work on ${config.environment}."
+                                echo "   Check botProjectPath in this env's Jenkinsfile.client.* matches BOT_PROJECT_ROOT above."
+                            else
+                                bot_age=\$(stat -c %Y "\$BOT_EXT")
+                                srv_age=\$(stat -c %Y "bin/MCDProxy" 2>/dev/null || echo 0)
+                                skew=\$(( (srv_age - bot_age) / 86400 ))
+                                if [ "\$skew" -gt 1 ]; then
+                                    echo "⚠️ BOT RUNTIME STALE: \$BOT_EXT is \${skew} days older than this build."
+                                    echo "   A protocol bump since then means practice bots are rejected at the handshake."
+                                    echo "   Re-run this env's MCDClient job, or check botProjectPath vs BOT_PROJECT_ROOT."
+                                else
+                                    echo "✓ Bot runtime current (\$(stat -c %y "\$BOT_EXT"))"
+                                fi
+                            fi
+                        """
+
                         def containerName = "${composeProject}-proxy-1"
 
                         // The commit the proxy image must be built from. Read from the
