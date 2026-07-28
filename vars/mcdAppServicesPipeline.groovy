@@ -1,5 +1,6 @@
 // MechaCorps App Services Pipeline - Shared Library
-// Deploys per-environment services: Auth, AccountService, AuctionHouse
+// Deploys per-environment services: Auth, AccountService, AuctionHouse,
+// and — for the environments that own one — CrashReporting + MCP.
 // Each service is independently catchError-wrapped so one failure
 // marks the build UNSTABLE without blocking other deploys.
 
@@ -50,6 +51,19 @@ def call(Map config) {
 
     // Postgres container (auth stack owns postgres)
     def postgresContainer = "${authProject}-postgres-1"
+
+    // Environments whose CrashReporting + MCP stack this pipeline owns.
+    // 'main' is deliberately absent: MCDServices-Main deploys main's crash
+    // stack under compose project 'src' (mcdServicesPipeline.groovy), and two
+    // jobs deploying it would fight over the same published ports. Adding an
+    // environment here requires .env.crash-reporting.<env> on its deploy host
+    // (python3 Src/Tools/deploy/gen_env.py <env>).
+    def crashEnvironments = ['feature-backend']
+    def deployCrashReporting = crashEnvironments.contains(config.environment)
+
+    def crashProject = "mcd-${config.environment}-crash"
+    def crashEnvFile = ".env.crash-reporting.${config.environment}"
+    def crashEnvFlag = "--env-file ${crashEnvFile}"
 
     pipeline {
         agent {
@@ -142,6 +156,7 @@ def call(Map config) {
                             env.ACCOUNT_SERVICE_CHANGED = 'true'
                             env.AUCTION_HOUSE_CHANGED = 'true'
                             env.DOCKER_SMOKE_CHANGED = 'true'
+                            env.CRASH_REPORTING_CHANGED = deployCrashReporting.toString()
                         } else {
                             sh "git fetch origin ${baseRef} 2>/dev/null || true"
                             def changes = mcdChangeDetection.detect(baseRef)
@@ -149,12 +164,17 @@ def call(Map config) {
                             env.ACCOUNT_SERVICE_CHANGED = changes.accountServiceChanged.toString()
                             env.AUCTION_HOUSE_CHANGED = changes.auctionHouseChanged.toString()
                             env.DOCKER_SMOKE_CHANGED = changes.dockerSmokeChanged.toString()
+                            // Gated on deployCrashReporting so an environment that
+                            // does not own a crash stack never lights this up. It
+                            // feeds anyWork and the deploy stage's when{} both.
+                            env.CRASH_REPORTING_CHANGED = (deployCrashReporting && changes.crashReportingChanged).toString()
                         }
 
                         def anyWork = (env.AUTH_CHANGED == 'true' ||
                                        env.ACCOUNT_SERVICE_CHANGED == 'true' ||
                                        env.AUCTION_HOUSE_CHANGED == 'true' ||
-                                       env.DOCKER_SMOKE_CHANGED == 'true')
+                                       env.DOCKER_SMOKE_CHANGED == 'true' ||
+                                       env.CRASH_REPORTING_CHANGED == 'true')
                         if (!anyWork) {
                             currentBuild.description += "\n⏭️ No app service changes — skipped"
                             currentBuild.result = 'NOT_BUILT'
@@ -337,7 +357,8 @@ def call(Map config) {
                     expression {
                         env.AUTH_CHANGED == 'true' ||
                         env.ACCOUNT_SERVICE_CHANGED == 'true' ||
-                        env.AUCTION_HOUSE_CHANGED == 'true'
+                        env.AUCTION_HOUSE_CHANGED == 'true' ||
+                        env.CRASH_REPORTING_CHANGED == 'true'
                     }
                 }
                 stages {
@@ -502,6 +523,80 @@ def call(Map config) {
                             }
                         }
                     }
+
+                    stage('Deploy CrashReporting + MCP') {
+                        when { expression { env.CRASH_REPORTING_CHANGED == 'true' } }
+                        steps {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                script {
+                                    echo "CrashReporting/MCPServer changed — rebuilding Docker containers (${config.environment})"
+
+                                    sh """
+                                        set -e
+                                        cd ${srcDir}
+
+                                        if [ ! -f ${crashEnvFile} ]; then
+                                            echo "✗ ${crashEnvFile} not found in ${srcDir}"
+                                            echo "  Provision it on the deploy host: python3 Src/Tools/deploy/gen_env.py ${config.environment}"
+                                            exit 1
+                                        fi
+
+                                        # docker-compose.crash-reporting.yml pins
+                                        # `env_file: .env.crash-reporting` (unsuffixed) on both
+                                        # services, so --env-file alone is not enough — compose
+                                        # aborts when that exact filename is absent. This tree
+                                        # only ever serves ${config.environment}, so make the
+                                        # unsuffixed name resolve to this environment's file.
+                                        cp ${crashEnvFile} .env.crash-reporting
+
+                                        # crash-reporting persists to mechacorps_crashes on the
+                                        # postgres the auth stack owns.
+                                        docker exec ${postgresContainer} psql -U mechacorps -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'mechacorps_crashes'" | grep -q 1 || \
+                                            docker exec ${postgresContainer} psql -U mechacorps -d postgres -c "CREATE DATABASE mechacorps_crashes;" || true
+
+                                        docker compose -p ${crashProject} -f docker-compose.crash-reporting.yml ${crashEnvFlag} build --no-cache crash-reporting mcp-server
+                                        docker compose -p ${crashProject} -f docker-compose.crash-reporting.yml ${crashEnvFlag} up -d --force-recreate crash-reporting mcp-server
+                                        sleep 5
+
+                                        # Read the ports back out of the same env file compose
+                                        # substituted them from rather than recomputing them
+                                        # here — gen_env.py owns the port formula. Fallbacks
+                                        # mirror the compose file's own defaults.
+                                        CR_PORT=\$(grep -E '^CR_PORT=' ${crashEnvFile} | tail -1 | cut -d= -f2)
+                                        MCP_PORT=\$(grep -E '^MCP_PORT=' ${crashEnvFile} | tail -1 | cut -d= -f2)
+                                        : "\${CR_PORT:=8090}"
+                                        : "\${MCP_PORT:=8095}"
+
+                                        PASS=true
+                                        for SVC in "CrashReporting:\$CR_PORT" "MCP Server:\$MCP_PORT"; do
+                                            NAME="\${SVC%%:*}"
+                                            PORT="\${SVC##*:}"
+                                            OK=false
+                                            for i in \$(seq 1 10); do
+                                                RESULT=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:\$PORT/health || true)
+                                                if [ "\$RESULT" = "200" ]; then
+                                                    echo "✓ \$NAME health check passed (${config.environment} :\$PORT)"
+                                                    OK=true
+                                                    break
+                                                fi
+                                                echo "Waiting for \$NAME... (attempt \$i/10)"
+                                                sleep 3
+                                            done
+                                            if [ "\$OK" = "false" ]; then
+                                                echo "✗ \$NAME health check failed (${config.environment} :\$PORT)"
+                                                PASS=false
+                                            fi
+                                        done
+                                        if [ "\$PASS" = "false" ]; then
+                                            docker compose -p ${crashProject} -f docker-compose.crash-reporting.yml ${crashEnvFlag} logs --tail=50 crash-reporting mcp-server
+                                            exit 1
+                                        fi
+                                    """
+                                    env.CRASH_REPORTING_DEPLOYED = "true"
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -513,6 +608,7 @@ def call(Map config) {
                     if (env.AUTH_DEPLOYED == "true") deployNotes << "Auth"
                     if (env.ACCOUNT_SERVICE_DEPLOYED == "true") deployNotes << "AccountService"
                     if (env.AUCTION_HOUSE_DEPLOYED == "true") deployNotes << "AuctionHouse"
+                    if (env.CRASH_REPORTING_DEPLOYED == "true") deployNotes << "CrashReporting+MCP"
 
                     if (deployNotes.isEmpty()) {
                         echo "No app service changes detected — nothing deployed"
@@ -540,6 +636,8 @@ def call(Map config) {
                     else if (env.ACCOUNT_SERVICE_CHANGED == 'true') failed << "AccountService"
                     if (env.AUCTION_HOUSE_DEPLOYED == "true") deployed << "AuctionHouse"
                     else if (env.AUCTION_HOUSE_CHANGED == 'true') failed << "AuctionHouse"
+                    if (env.CRASH_REPORTING_DEPLOYED == "true") deployed << "CrashReporting+MCP"
+                    else if (env.CRASH_REPORTING_CHANGED == 'true') failed << "CrashReporting+MCP"
 
                     def msg = "⚠️ Partial deploy"
                     if (deployed) msg += " — OK: ${deployed.join(', ')}"
