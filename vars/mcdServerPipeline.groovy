@@ -158,6 +158,23 @@ def call(Map config) {
                 }
             }
 
+            // Data/GameData/ is gitignored — it's a build artifact produced
+            // from Data/Cards/* by Src/MCDCoreExt/export_done_cards.py against
+            // the DONE-cards registry. It must exist BEFORE the build stage:
+            // the MCDServerTest binary loads its card library from
+            // Data/GameData/Cards/* at runtime, and on branches with the
+            // MCD_DATA_DIR repoint (MCDClient bead mc-0xm) the GameServer
+            // `cmake --install` also copies Data/GameData/ into each versioned
+            // server dir. On branches where the GameData refactor hasn't
+            // landed (e.g. the older release branch) the target may not exist;
+            // the `|| echo ...` fallback keeps the pipeline backward-compatible.
+            stage('Populate GameData') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh 'make export-done || echo "[Populate GameData] make target missing on this branch — skipping"'
+                }
+            }
+
             stage('Build GameServer, TestClient & Proxy') {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
@@ -214,21 +231,6 @@ def call(Map config) {
                 }
             }
 
-            // Data/GameData/ is gitignored — it's a build artifact produced
-            // from Data/Cards/* by Src/MCDCoreExt/export_done_cards.py against
-            // the DONE-cards registry. The MCDServerTest binary loads its
-            // card library from Data/GameData/Cards/* at runtime, so we need
-            // to populate that directory before the Unit Tests stage. On
-            // branches where the GameData refactor hasn't landed (e.g. the
-            // older release branch) the target may not exist; the
-            // `|| echo ...` fallback keeps the pipeline backward-compatible.
-            stage('Populate GameData') {
-                when { expression { env.SERVER_CHANGED == 'true' } }
-                steps {
-                    sh 'make export-done || echo "[Populate GameData] make target missing on this branch — skipping"'
-                }
-            }
-
             // Validated Card Data Pipeline (MCDClient bead mc-8ko, plan §4):
             // validate the *generated* Data/GameData/ tree right after it is
             // populated and before any consumer (Unit Tests / packaging) runs.
@@ -242,6 +244,23 @@ def call(Map config) {
                 }
                 steps {
                     mcdValidateGameData(hardFail: config.validateGameDataHardFail ?: false)
+                }
+            }
+
+            // Hermetic build (MCDClient bead mc-0xm, plan §5, Scenario 3): with
+            // the generated data exported and validated, relocate the AUTHORING
+            // data (Data/Cards + Data/References) out of the workspace so every
+            // stage below — Unit Tests, Integration Test, artifact staging —
+            // proves nothing reads authoring data. Gated on
+            // config.stripAuthoringData: a branch opts in once its tests read
+            // generated Data/GameData/ only (features/card first). The build
+            // finishes stripped; the next build's checkout restores the tree.
+            stage('Strip Authoring Data') {
+                when {
+                    expression { env.SERVER_CHANGED == 'true' && config.stripAuthoringData }
+                }
+                steps {
+                    mcdStripAuthoringData()
                 }
             }
 
