@@ -10,9 +10,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client curl wget zip unzip zstd ca-certificates gnupg lsb-release \
         openjdk-17-jdk-headless \
         mingw-w64 \
-        python3 python3-pytest rsync sudo \
+        python3 python3-pytest python-is-python3 rsync sudo \
         zlib1g-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
+# python-is-python3: several MCDClient Makefile test recipes invoke bare
+# `python` (make test-tutorial, test-smoke, test-e2e). Debian's python3
+# package ships no such binary, so those targets die with "python: command
+# not found" without this shim package.
 
 # Pre-create Crypt32 symlink for MinGW OpenSSL builds (avoids sudo at build time)
 RUN if [ -f /usr/x86_64-w64-mingw32/lib/libcrypt32.a ] && \

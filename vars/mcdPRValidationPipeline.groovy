@@ -155,6 +155,8 @@ def call(Map config) {
                         env.SHARED_CHANGED = changes.sharedChanged.toString()
                         env.CRASH_REPORTING_CHANGED = changes.crashReportingChanged.toString()
                         env.MCP_SERVER_CHANGED = changes.mcpServerChanged.toString()
+                        // Gates 'Tutorial Validation' alongside the server scope.
+                        env.TUTORIAL_CHANGED = changes.tutorialChanged.toString()
 
                         def parts = []
                         if (changes.serverChanged) parts << 'server'
@@ -485,6 +487,72 @@ def call(Map config) {
 
                         if (testResult != 0) {
                             error("Integration test failed")
+                        }
+                    }
+                }
+            }
+
+            // Tutorial validation harness (MCDClient ADR 0075): drives the
+            // scripted 6-turn tutorial game through the real engine —
+            // MCDServer behind MCDProxy with two scripted TestClient seats —
+            // and diffs the per-turn phase-end snapshots against engine-truth
+            // checkpoints. Without this stage an engine change that falsifies
+            // a tutorial beat (a bid that stops winning, a stat that drifts, a
+            // combat that stops being a clean player win) only surfaces when
+            // someone runs the harness by hand; the smoke tier proves
+            // tutorial.txt *completes*, not that it stays on script.
+            //
+            // `make test-tutorial` builds its own DEBUG server/proxy/testclient
+            // first: tests/e2e/conftest.py resolves binaries out of build/Debug/
+            // and pytest.skip()s when they're absent, so pointing this at the
+            // --release tree built above would skip green rather than validate.
+            // Debug and Release are separate build dirs, so this neither reuses
+            // nor clobbers the artifacts 'Verify Server Build' checked.
+            //
+            // ~8s of pytest once built; no Godot involved.
+            stage('Tutorial Validation') {
+                when {
+                    expression {
+                        env.PR_ALREADY_MERGED != 'true' &&
+                        (env.SERVER_CHANGED == 'true' || env.TUTORIAL_CHANGED == 'true')
+                    }
+                }
+                steps {
+                    sh '''
+                        # The harness landed on features/backend (MCDClient
+                        # #2242) and isn't on every target branch yet — no-op
+                        # where it's absent, mirroring the check-script stages.
+                        if [ ! -f tests/e2e/test_tutorial_validation.py ]; then
+                            echo "tests/e2e/test_tutorial_validation.py not present on this branch, skipping"
+                            exit 0
+                        fi
+
+                        rm -f test-results/tutorial-validation.xml
+
+                        # The Makefile recipe invokes bare `python`, but the
+                        # build agent installs Debian's python3, which ships no
+                        # such binary. Shim it onto PATH only when it is really
+                        # missing, so this keeps working unchanged once the
+                        # image picks up python-is-python3 (added to
+                        # docker/build-agent/Dockerfile by this same change).
+                        if ! command -v python > /dev/null 2>&1; then
+                            mkdir -p .ci-bin
+                            ln -sf "$(command -v python3)" .ci-bin/python
+                            PATH="$PWD/.ci-bin:$PATH"
+                            export PATH
+                        fi
+
+                        make test-tutorial
+                    '''
+                }
+                post {
+                    always {
+                        script {
+                            try {
+                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'test-results/tutorial-validation.xml'
+                            } catch (NoSuchMethodError e) {
+                                echo "JUnit plugin not installed — skipping test report publishing"
+                            }
                         }
                     }
                 }
