@@ -236,9 +236,17 @@ def categorize(String filePath) {
     if (filePath.startsWith('Src/Auth/')) return 'auth'
     if (filePath.startsWith('Src/docker-compose.auth')) return 'auth'
 
-    // Client-only paths
+    // Client-only paths.
+    //
+    // Src/Validation/ is the standalone card-validator core (the CardValidator
+    // binary, its gtest suites, and the sources MCDCoreExt compiles into the
+    // editor extension). It is authoring tooling, not runtime: it was previously
+    // uncategorised, so every validator-only PR fell through to the unmatched
+    // bucket and burned a full GameServer build. 'Validate GameData' runs in the
+    // client pipeline too (gated on CLIENT_CHANGED), so the gamedata backstop
+    // still re-runs with a rebuilt validator.
     def clientPrefixes = [
-        'Src/MCDCoreExt/', 'GameModes/', 'Menus/', 'DeckBuilder/',
+        'Src/MCDCoreExt/', 'Src/Validation/', 'GameModes/', 'Menus/', 'DeckBuilder/',
         'CardLibrary/', 'CardLibraryScripts/', 'Resources/', 'Onboard/',
         'Game/', 'Sandbox/', 'tests/', 'scripts/', 'addons/',
         'Assets/', 'Export/', 'Generated/',

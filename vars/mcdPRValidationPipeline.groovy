@@ -369,6 +369,36 @@ def call(Map config) {
                 }
             }
 
+            // C++ gtest suites for the validation core (Src/Validation/Test/).
+            // Src/Validation/Test is a standalone CMake project — Src/Validation's
+            // own CMakeLists does not add_subdirectory(Test) — so nothing built or
+            // ran this target before: not the tag_id_list_computer suite that had
+            // been there for months, nor the pool/rarity/requirements/variant
+            // suites added by MCDClient#2185. `make test-validator-cpp` configures
+            // Test/ directly, builds, and runs it with gtest JUnit output.
+            // Gated on CLIENT_CHANGED — Src/Validation/** now routes to the
+            // 'client' category in mcdChangeDetection (see this PR).
+            stage('Validation C++ Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        rm -f test-results/validation_tests.xml
+                        make test-validator-cpp
+                    '''
+                }
+                post {
+                    always {
+                        script {
+                            try {
+                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'test-results/validation_tests.xml'
+                            } catch (NoSuchMethodError e) {
+                                echo "JUnit plugin not installed — skipping test report publishing"
+                            }
+                        }
+                    }
+                }
+            }
+
             stage('Build GameServer, TestClient & Proxy') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
