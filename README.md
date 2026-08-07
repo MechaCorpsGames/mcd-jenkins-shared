@@ -117,6 +117,38 @@ discordNotify.failure(
 )
 ```
 
+## Deploy Trees and the SSH Remote
+
+`mcdServicesPipeline` and `mcdAppServicesPipeline` build and deploy out of a **deploy tree** on the host (`/var/opt/mechacorpsgames`, `/var/opt/mechacorpsgames-<env>`), not out of the Jenkins workspace — the compose files, the gitignored `.env.*` secrets, and the bind-mounted log volumes live there. Their `Sync Src Tree` stage resets that tree to `origin/<branch>` before any build reads it.
+
+**The deploy tree's remote must be SSH.** The build container mounts `/var/lib/jenkins/.ssh` and nothing else credential-wise — it has **no HTTPS credentials**. So the tree is recovered and bootstrapped from an explicit `git@github.com:...` remote, *not* from `${GIT_URL}` (the job's SCM URL, which is HTTPS). Override per-caller with the `deployRemote` config key if a job tracks a different repo.
+
+An HTTPS remote fails as `could not read Username for 'https://github.com'`, several layers down inside `git fetch`. It reads like a transient network fault, but the tree then quietly stops tracking the branch and later stages keep deploying stale source — building **green** the whole time. `Sync Src Tree` now checks the remote up front and fails the build with the offending URL instead. This cost ~15h of a red `MCDServices-Main` on 2026-08-06.
+
+### Diagnosing: `git remote get-url` lies
+
+A `url.<base>.insteadOf` rewrite can silently turn an SSH remote into an HTTPS one at fetch time, so a correct-looking `origin` proves nothing. The two commands disagree, and that disagreement *is* the rewrite:
+
+```bash
+git -C <tree> config --get remote.origin.url   # RAW configured value — ignores insteadOf
+git -C <tree> remote get-url origin            # EFFECTIVE value — expands insteadOf, what fetch actually uses
+```
+
+When diagnosing, read the raw config rather than trusting `get-url`, and look for the rewrite itself:
+
+```bash
+cat <tree>/.git/config                  # raw, no rewrites applied
+git config --get-regexp '^url\.'        # repo-level rewrites
+git config --global --get-regexp '^url\.'   # global rewrites — this is what bit us
+```
+
+To repair a tree by hand:
+
+```bash
+git -C <tree> remote set-url origin git@github.com:MechaCorpsGames/MCDClient.git
+git config --global --unset-all url.https://github.com/.insteadOf   # if an SSH->HTTPS rewrite is present
+```
+
 ## GitHub Webhook Configuration
 
 After creating the Jenkins jobs, configure GitHub webhooks:

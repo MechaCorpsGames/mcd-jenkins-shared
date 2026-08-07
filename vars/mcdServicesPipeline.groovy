@@ -21,6 +21,15 @@ def call(Map config) {
     def srcRoot = '/var/opt/mechacorpsgames'
     def srcDir = "${srcRoot}/Src"
 
+    // The remote the deploy tree is recovered/bootstrapped from. Deliberately
+    // NOT ${GIT_URL} (the job's SCM URL, which is HTTPS): this build container
+    // mounts only the SSH deploy key — /var/lib/jenkins/.ssh, see the agent
+    // args below — and carries no HTTPS credentials. A tree recovered from
+    // GIT_URL therefore authenticates against nothing and silently stops
+    // syncing, which is what left MCDServices-Main red for ~15h on 2026-08-06
+    // (MCDClient mc-t4m3). Overridable via config for callers on another repo.
+    def deployRemote = config.deployRemote ?: 'git@github.com:MechaCorpsGames/MCDClient.git'
+
     pipeline {
         agent {
             docker {
@@ -175,13 +184,46 @@ def call(Map config) {
                                 echo "Recovering ${srcRoot}: exists without .git, initializing in place"
                                 cd ${srcRoot}
                                 git init -q
-                                git remote add origin "\${GIT_URL}"
+                                git remote add origin "${deployRemote}"
                             else
-                                echo "Bootstrapping ${srcRoot} from \${GIT_URL}"
-                                git clone "\${GIT_URL}" ${srcRoot}
+                                echo "Bootstrapping ${srcRoot} from ${deployRemote}"
+                                git clone "${deployRemote}" ${srcRoot}
                             fi
                         fi
                         cd ${srcRoot}
+
+                        # Fail here, loudly, rather than deep inside the fetch.
+                        # An HTTPS remote dies with "could not read Username for
+                        # 'https://github.com'" several layers down, which reads
+                        # like a transient network fault; the tree then quietly
+                        # stops tracking the branch and every later stage deploys
+                        # stale source that still builds green.
+                        #
+                        # Two URLs matter and they can disagree: the RAW configured
+                        # value, and the EFFECTIVE one git actually fetches from
+                        # after url.<base>.insteadOf rewrites. `git remote get-url`
+                        # expands insteadOf; `git config --get remote.origin.url`
+                        # does not. A mismatch IS the rewrite — the half of the
+                        # 2026-08-06 breakage that a correct-looking origin hid.
+                        RAW_REMOTE=\$(git config --get remote.origin.url || true)
+                        EFFECTIVE_REMOTE=\$(git remote get-url origin 2>/dev/null || true)
+                        echo "Deploy tree remote: raw='\$RAW_REMOTE' effective='\$EFFECTIVE_REMOTE'"
+                        if [ "\$RAW_REMOTE" != "\$EFFECTIVE_REMOTE" ]; then
+                            echo "NOTE: a url.*.insteadOf rewrite is rewriting this remote (raw != effective)."
+                            echo "      Inspect with: git config --get-regexp '^url\\.'"
+                        fi
+                        case "\$EFFECTIVE_REMOTE" in
+                            https://*)
+                                echo "ERROR: ${srcRoot} origin resolves to HTTPS: \$EFFECTIVE_REMOTE"
+                                echo "       This container has no HTTPS credentials — only the SSH deploy key is mounted."
+                                echo "       Expected: ${deployRemote}"
+                                echo "       Fix on the deploy host:"
+                                echo "         git -C ${srcRoot} remote set-url origin ${deployRemote}"
+                                echo "         git config --global --get-regexp '^url\\.'   # then --unset-all any SSH->HTTPS rewrite"
+                                exit 1
+                                ;;
+                        esac
+
                         git fetch origin --prune
                         # -f -B: force-create-or-reset the local branch to
                         # origin/<branch>, overwriting untracked files that would
