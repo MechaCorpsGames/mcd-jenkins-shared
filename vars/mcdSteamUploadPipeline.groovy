@@ -21,7 +21,7 @@ def call(Map config) {
         parameters {
             choice(
                 name: 'SOURCE_JOB',
-                choices: ['MCDClient-Main', 'MCDClient-Release'],
+                choices: ['MCDClient-Main', 'MCDClient-Release', 'MCDClient-FeatureBackend', 'MCDClient-FeatureCard'],
                 description: 'Which client build job to get artifacts from'
             )
             string(
@@ -31,8 +31,8 @@ def call(Map config) {
             )
             choice(
                 name: 'STEAM_BRANCH',
-                choices: ['main', 'alpha'],
-                description: 'Steam branch to set the build live on'
+                choices: ['staging', 'main', 'backend', 'card', 'default'],
+                description: "Steam beta branch to set the build live on. 'default' = public branch: the build uploads but is NOT set live (flip it manually in Steamworks)."
             )
         }
 
@@ -137,8 +137,25 @@ def call(Map config) {
                         cp steam/depot_windows.vdf steam_build/
                         cp steam/depot_linux.vdf steam_build/
 
-                        sed -i "s/__DESCRIPTION__/v${CLIENT_VERSION} from ${SOURCE_BRANCH} (${SOURCE_COMMIT})/g" \
+                        # Use '|' as the sed delimiter, NOT '/': the git SOURCE_BRANCH
+                        # can contain a slash (e.g. features/card, features/backend),
+                        # which breaks an s/.../.../ expression ("unknown option to `s'")
+                        # and kills the upload before steamcmd runs. Branch names and
+                        # commit hashes never contain '|', so it's a safe delimiter.
+                        sed -i "s|__DESCRIPTION__|v${CLIENT_VERSION} from ${SOURCE_BRANCH} (${SOURCE_COMMIT})|g" \
                             steam_build/app_build.vdf
+
+                        # Route the chosen Steam branch into setlive so the upload goes
+                        # live on that beta branch. 'default' (public) is intentionally
+                        # left empty so the public branch stays a manual Steamworks flip.
+                        SETLIVE_BRANCH="${params.STEAM_BRANCH}"
+                        if [ "\$SETLIVE_BRANCH" = "default" ]; then
+                            SETLIVE_BRANCH=""
+                            echo "STEAM_BRANCH=default -> setlive left empty (flip public manually in Steamworks)"
+                        else
+                            echo "STEAM_BRANCH=\$SETLIVE_BRANCH -> build will be set live on this beta branch"
+                        fi
+                        sed -i "s|__SETLIVE__|\$SETLIVE_BRANCH|g" steam_build/app_build.vdf
 
                         echo "=== Steam build VDF ==="
                         cat steam_build/app_build.vdf

@@ -10,7 +10,7 @@
  *         monitoringChanged, crashReportingChanged,
  *         accountServiceChanged, auctionHouseChanged, discordBotChanged,
  *         dockerSmokeChanged, mcpGameServerChanged, determinismHarnessChanged,
- *         proxyChanged, sharedChanged, mcpServerChanged,
+ *         proxyChanged, sharedChanged, mcpServerChanged, tutorialChanged,
  *         changedFiles (list)
  *
  * proxyChanged / sharedChanged / mcpServerChanged are computed via direct
@@ -20,6 +20,13 @@
  * replacing them — Src/Proxy/ still routes to 'server' for the server
  * build pipeline; Src/MCPServer/ still routes to 'crash-reporting' for
  * the bundled deploy in mcdServicesPipeline.
+ *
+ * tutorialChanged uses that same direct-scan approach for the tutorial
+ * validation harness (MCDClient ADR 0075). Its inputs deliberately span
+ * categories — the stacked deck is 'server', the scripted seat JSONs under
+ * bots/ hit the unknown-file fallback, and the engine-truth checkpoint
+ * table under tests/e2e/ is 'client' — so no single category expresses
+ * "the tutorial harness cares about this file".
  */
 def detect(String baseRef) {
     def changedFilesRaw = sh(
@@ -36,6 +43,7 @@ def detect(String baseRef) {
                 dockerSmokeChanged: true,
                 mcpGameServerChanged: true, determinismHarnessChanged: true,
                 proxyChanged: true, sharedChanged: true, mcpServerChanged: true,
+                tutorialChanged: true,
                 changedFiles: []]
     }
 
@@ -59,6 +67,8 @@ def detect(String baseRef) {
     def proxyChanged = false
     def sharedChanged = false
     def mcpServerChanged = false
+    // Tutorial validation harness inputs (independent of categorize(); see method doc)
+    def tutorialChanged = false
     def unmatchedFiles = []
 
     for (file in changedFiles) {
@@ -73,6 +83,15 @@ def detect(String baseRef) {
         if (file.startsWith('tests/determinism-harness/') || file.startsWith('Src/TestClient/Test/replay/')) {
             determinismHarnessChanged = true
         }
+
+        // Tutorial validation harness signal: the artifacts that define the
+        // scripted game (stacked deck + the scripted seat action lists) and
+        // the engine-truth checkpoint table the pytest asserts against.
+        // The engine itself is covered by serverChanged, which gates the
+        // same stage — see mcdPRValidationPipeline's 'Tutorial Validation'.
+        if (file.startsWith('Src/GameServer/StackedDecks/') ||
+            file.startsWith('bots/') ||
+            file == 'tests/e2e/test_tutorial_validation.py') tutorialChanged = true
 
         def category = categorize(file)
         switch (category) {
@@ -151,7 +170,7 @@ def detect(String baseRef) {
         mcpServerChanged = true
     }
 
-    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged}, mcpGameServer=${mcpGameServerChanged}, determinismHarness=${determinismHarnessChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged} ==="
+    echo "=== Change detection: server=${serverChanged}, client=${clientChanged}, auth=${authChanged}, wiki=${wikiChanged}, monitoring=${monitoringChanged}, crashReporting=${crashReportingChanged}, accountService=${accountServiceChanged}, auctionHouse=${auctionHouseChanged}, discordBot=${discordBotChanged}, dockerSmoke=${dockerSmokeChanged}, mcpGameServer=${mcpGameServerChanged}, determinismHarness=${determinismHarnessChanged}, proxy=${proxyChanged}, shared=${sharedChanged}, mcpServer=${mcpServerChanged}, tutorial=${tutorialChanged} ==="
     return [serverChanged: serverChanged, clientChanged: clientChanged,
             authChanged: authChanged, wikiChanged: wikiChanged,
             monitoringChanged: monitoringChanged,
@@ -165,6 +184,7 @@ def detect(String baseRef) {
             proxyChanged: proxyChanged,
             sharedChanged: sharedChanged,
             mcpServerChanged: mcpServerChanged,
+            tutorialChanged: tutorialChanged,
             changedFiles: changedFiles]
 }
 
@@ -205,8 +225,12 @@ def categorize(String filePath) {
     // Go shared library (affects Proxy, Auth, CrashReporting, MCPServer)
     if (filePath.startsWith('Src/Shared/')) return 'services-shared'
 
-    // Server-only paths
-    def serverPrefixes = ['Src/GameServer/', 'Src/Proxy/', 'Src/TestClient/']
+    // Server-only paths. Src/BotArena/ is here because the WASM arena bots
+    // are built ('make wasm-bots') and deployed by mcdServerPipeline's
+    // 'Build WASM Bots' / 'Deploy Bots' stages — before this entry,
+    // arena-only changes fell to the unknown-files fallback, which ALSO set
+    // clientChanged and burned a full client build + publish on a Go bot edit.
+    def serverPrefixes = ['Src/GameServer/', 'Src/Proxy/', 'Src/TestClient/', 'Src/BotArena/']
     for (prefix in serverPrefixes) {
         if (filePath.startsWith(prefix)) return 'server'
     }
@@ -217,9 +241,17 @@ def categorize(String filePath) {
     if (filePath.startsWith('Src/Auth/')) return 'auth'
     if (filePath.startsWith('Src/docker-compose.auth')) return 'auth'
 
-    // Client-only paths
+    // Client-only paths.
+    //
+    // Src/Validation/ is the standalone card-validator core (the CardValidator
+    // binary, its gtest suites, and the sources MCDCoreExt compiles into the
+    // editor extension). It is authoring tooling, not runtime: it was previously
+    // uncategorised, so every validator-only PR fell through to the unmatched
+    // bucket and burned a full GameServer build. 'Validate GameData' runs in the
+    // client pipeline too (gated on CLIENT_CHANGED), so the gamedata backstop
+    // still re-runs with a rebuilt validator.
     def clientPrefixes = [
-        'Src/MCDCoreExt/', 'GameModes/', 'Menus/', 'DeckBuilder/',
+        'Src/MCDCoreExt/', 'Src/Validation/', 'GameModes/', 'Menus/', 'DeckBuilder/',
         'CardLibrary/', 'CardLibraryScripts/', 'Resources/', 'Onboard/',
         'Game/', 'Sandbox/', 'tests/', 'scripts/', 'addons/',
         'Assets/', 'Export/', 'Generated/',

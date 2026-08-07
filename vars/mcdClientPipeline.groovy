@@ -235,6 +235,42 @@ def call(Map config) {
                 }
             }
 
+            // Validated Card Data Pipeline (MCDClient bead mc-8ko, plan §4):
+            // the MCDCoreExt Linux Debug build above exports Data/GameData/ via
+            // build.py; validate that generated tree before the GDScript tests
+            // (which load the runtime card library from it) run. Regenerate first
+            // so the stage is self-contained. Gated on config.validateGameData so
+            // it is inert unless a branch opts in (main/release unaffected while
+            // the corpus is cleaned up — plan §7).
+            stage('Validate GameData') {
+                when {
+                    expression { env.CLIENT_CHANGED == 'true' && config.validateGameData }
+                }
+                steps {
+                    sh 'make export-done || echo "[Validate GameData] export-done target missing on this branch — skipping"'
+                    mcdValidateGameData(hardFail: config.validateGameDataHardFail ?: false)
+                }
+            }
+
+            // Hermetic build (MCDClient bead mc-0xm, plan §5, Scenario 3): with
+            // the generated data exported and validated, relocate the AUTHORING
+            // data (Data/Cards + Data/References) out of the workspace. The
+            // GDScript tests below then prove the client reads generated
+            // Data/GameData/ only, and 'Export Game Executables' physically
+            // cannot pack authoring JSON into the shipped .pck. The MCDCoreExt
+            // Release/Windows/Android builds below auto-run export_done_cards.py
+            // after install; it no-ops loudly on the strip marker. Gated on
+            // config.stripAuthoringData (features/card first). The build
+            // finishes stripped; the next build's checkout restores the tree.
+            stage('Strip Authoring Data') {
+                when {
+                    expression { env.CLIENT_CHANGED == 'true' && config.stripAuthoringData }
+                }
+                steps {
+                    mcdStripAuthoringData()
+                }
+            }
+
             // After Linux Debug, run tests + remaining builds in parallel.
             // Each platform uses a separate build directory so there are no conflicts.
             stage('Cross-platform Builds & Tests') {
@@ -440,15 +476,33 @@ def call(Map config) {
                         }
                     }
 
+                    script {
+                        // Globally-monotonic Android versionCode.
+                        // Play requires versionCode to be unique AND strictly increasing per
+                        // package across ALL tracks. BUILD_NUMBER is per-job, so MCDClient-Main
+                        // and MCDClient-Release (independent counters) would eventually collide
+                        // on Play and get rejected. Derive it from epoch-minutes (fits a 32-bit
+                        // int for centuries) plus a small per-lane offset so two jobs building in
+                        // the same minute can't tie. Lane: Release=0, Main=1, FeatureBackend=2,
+                        // FeatureCard=3, other=4.
+                        long epochMin = (sh(script: 'date +%s', returnStdout: true).trim().toLong()).intdiv(60)
+                        int lane = env.JOB_NAME?.contains('Release') ? 0 :
+                                   env.JOB_NAME?.contains('FeatureBackend') ? 2 :
+                                   env.JOB_NAME?.contains('FeatureCard') ? 3 :
+                                   env.JOB_NAME?.contains('Main') ? 1 : 4
+                        env.ANDROID_VERSION_CODE = ((epochMin * 8L) + lane).toString()
+                        echo "Android versionCode=${env.ANDROID_VERSION_CODE} (lane ${lane}), versionName=${env.CLIENT_VERSION}"
+                    }
+
                     sh """
                         mkdir -p exports
 
-                        # Inject monotonic version code + human-readable version name
-                        # into the Android preset so Play Store won't reject duplicate uploads.
-                        # Play requires versionCode to be a strictly-increasing integer.
-                        sed -i "s|^version/code=.*|version/code=${BUILD_NUMBER}|" export_presets.cfg
+                        # Inject the globally-monotonic version code (computed in the script
+                        # block above) + the human-readable version name into the Android preset
+                        # so Play won't reject duplicate uploads.
+                        sed -i "s|^version/code=.*|version/code=${ANDROID_VERSION_CODE}|" export_presets.cfg
                         sed -i "s|^version/name=.*|version/name=\\"${CLIENT_VERSION}\\"|" export_presets.cfg
-                        echo "Android versionCode=${BUILD_NUMBER}, versionName=${CLIENT_VERSION}"
+                        echo "Android versionCode=${ANDROID_VERSION_CODE}, versionName=${CLIENT_VERSION}"
 
                         echo "Exporting Windows build..."
                         godot --headless --export-release "Windows Desktop" exports/MechaCorpsDraft.exe 2>&1 || true
@@ -472,18 +526,60 @@ def call(Map config) {
                                 string(credentialsId: 'android-upload-keystore-alias', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_USER'),
                                 string(credentialsId: 'android-upload-keystore-password', variable: 'GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD')
                             ]) {
-                                sh """
+                                sh '''
                                     echo "Exporting Android AAB (Play Store format)..."
+
+                                    # Godot's gradle build (use_gradle_build=true) needs the Android
+                                    # build template in res://android/build/. It is .gitignored, so
+                                    # install it from the export templates matching this Godot build.
+                                    GODOT_VER=$(godot --version 2>/dev/null | sed -E 's/\\.(official|custom_build|mono).*$//')
+                                    TPL_DIR="$HOME/.local/share/godot/export_templates/$GODOT_VER"
+                                    if [ ! -f android/build/build.gradle ]; then
+                                        echo "Installing Android build template ($GODOT_VER)..."
+                                        mkdir -p android/build
+                                        unzip -o -q "$TPL_DIR/android_source.zip" -d android/build/
+                                    fi
+                                    touch android/.gdignore
+                                    # Version marker Godot validates the template against.
+                                    printf '%s' "$GODOT_VER" > android/.build_version
+                                    printf '%s' "$GODOT_VER" > android/build/.build_version
+
+                                    # Godot 4.6 export validation rejects an env-var-only release
+                                    # keystore, so write it into the preset transiently, then restore
+                                    # (drops the password back out of the workspace afterwards).
+                                    cp export_presets.cfg /tmp/ep.play.bak
+                                    python3 - <<'PY'
+import os
+path = os.environ["GODOT_ANDROID_KEYSTORE_RELEASE_PATH"]
+user = os.environ["GODOT_ANDROID_KEYSTORE_RELEASE_USER"]
+pw   = os.environ["GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD"]
+f = "export_presets.cfg"
+lines = open(f).read().splitlines()
+out, ins = [], False
+for l in lines:
+    out.append(l)
+    if l.strip() == "[preset.2.options]" and not ins:
+        out += ['keystore/release="%s"' % path,
+                'keystore/release_user="%s"' % user,
+                'keystore/release_password="%s"' % pw]
+        ins = True
+open(f, "w").write("\\n".join(out) + "\\n")
+print("keystore written into preset.2.options:", ins)
+PY
+
                                     godot --headless --export-release "Android" exports/MechaCorpsDraft.aab 2>&1 || true
+
+                                    cp /tmp/ep.play.bak export_presets.cfg
+
                                     if [ ! -f exports/MechaCorpsDraft.aab ]; then
                                         echo "Android export failed. Checklist:"
                                         echo "  - export_presets.cfg: gradle_build/use_gradle_build=true, export_format=1"
-                                        echo "  - Android SDK at \$ANDROID_SDK_ROOT, NDK at \$ANDROID_NDK_HOME"
-                                        echo "  - Godot Android build template installed in export_templates dir"
+                                        echo "  - Android build template + .build_version present (auto-installed above)"
+                                        echo "  - SDK 35 / build-tools 35.0.1 present in the agent image"
                                         echo "  - Upload keystore credential android-upload-keystore accessible"
                                         exit 1
                                     fi
-                                """
+                                '''
                             }
                         } else {
                             echo "Skipping Android AAB export (no upload keystore)."
@@ -668,7 +764,7 @@ EOF
             "download": "MechaCorpsDraft-${BRANCH_SAFE}-Android-v${CLIENT_VERSION}.aab",
             "package": "com.mechacorpsgames.mechacorpsdraft",
             "format": "aab",
-            "versionCode": ${BUILD_NUMBER}
+            "versionCode": ${ANDROID_VERSION_CODE}
         }""" : ""
 
                         sh """
@@ -707,6 +803,38 @@ EOF
                 steps {
                     script { env.BUILD_PHASE = 'Archive Artifacts' }
                     archiveArtifacts artifacts: 'artifacts/**/*', fingerprint: true
+                }
+            }
+
+            // Auto-publish to Steam. Gated on config.steamBranch so this is a
+            // complete no-op on any pipeline that doesn't opt in — the branch
+            // Jenkinsfiles arm it (features/backend→backend, features/card→card,
+            // main→main, release→staging). We hand off to the standalone
+            // MCDSteam-Upload job (which runs in a container with steamcmd + the
+            // Steam content cache mounted and reads THIS build's just-archived
+            // artifacts by job+build number). Fire-and-forget: wait:false so the
+            // client build doesn't block on the upload, propagate:false so a
+            // Steam hiccup never reds an otherwise-good build — MCDSteam-Upload
+            // has its own Discord success/failure notifications. The upload job
+            // routes 'default' (public) to upload-only; all other branches are
+            // set live on their beta automatically.
+            stage('Publish to Steam') {
+                when {
+                    expression { env.CLIENT_CHANGED == 'true' && config.steamBranch }
+                }
+                steps {
+                    script {
+                        env.BUILD_PHASE = 'Publish to Steam'
+                        build job: 'MCDSteam-Upload',
+                            parameters: [
+                                string(name: 'SOURCE_JOB', value: config.jobName),
+                                string(name: 'SOURCE_BUILD', value: env.BUILD_NUMBER),
+                                string(name: 'STEAM_BRANCH', value: config.steamBranch)
+                            ],
+                            wait: false,
+                            propagate: false
+                        echo "Triggered MCDSteam-Upload: ${config.jobName} #${env.BUILD_NUMBER} -> Steam branch '${config.steamBranch}'"
+                    }
                 }
             }
 

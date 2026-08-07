@@ -10,9 +10,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client curl wget zip unzip zstd ca-certificates gnupg lsb-release \
         openjdk-17-jdk-headless \
         mingw-w64 \
-        python3 python3-pytest rsync sudo \
+        python3 python3-pytest python-is-python3 rsync sudo \
         zlib1g-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
+# python-is-python3: several MCDClient Makefile test recipes invoke bare
+# `python` (make test-tutorial, test-smoke, test-e2e). Debian's python3
+# package ships no such binary, so those targets die with "python: command
+# not found" without this shim package.
 
 # Pre-create Crypt32 symlink for MinGW OpenSSL builds (avoids sudo at build time)
 RUN if [ -f /usr/x86_64-w64-mingw32/lib/libcrypt32.a ] && \
@@ -36,8 +40,13 @@ RUN yes | ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --licenses > /
     ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager \
         "platform-tools" \
         "platforms;android-34" \
+        "platforms;android-35" \
         "build-tools;34.0.0" \
+        "build-tools;35.0.1" \
         "ndk;26.1.10909125"
+# android-35 + build-tools 35.0.1: the Godot 4.6 Android gradle build template
+# targets SDK 35; gradle cannot auto-install them at runtime (/opt/android-sdk is
+# not writable by the build user), so they must be present in the image.
 
 ENV ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/26.1.10909125
 
@@ -89,6 +98,19 @@ RUN dpkg --add-architecture i386 && \
     curl -fsSL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" \
         | tar -xz -C /opt/steamcmd && \
     /opt/steamcmd/steamcmd.sh +quit || true
+
+# ── Layer 5c: fastlane (Google Play upload via `supply`) ──────────────────────
+# Used by mcdPlayUploadPipeline to push AABs to Play tracks through the Android
+# Publisher API. build-essential (layer 1) lets the native gems compile.
+# fastlane aborts at startup unless the locale is UTF-8.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ruby ruby-dev libffi-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && gem install --no-document fastlane \
+    && fastlane --version
+# NOTE: fastlane is intentionally unpinned for the first image build. Once a build
+# is green, pin it here (e.g. `gem install fastlane -v 2.x.y`) for reproducibility.
 
 # ── Layer 6: Jenkins user (UID/GID matching host) ─────────────────────────────
 RUN groupadd -g 112 jenkins && \

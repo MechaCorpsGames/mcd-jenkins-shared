@@ -60,9 +60,13 @@ def call(Map config) {
                 // Filter: only trigger when the push is to our branch AND touches server-relevant paths
                 // Paths: GameServer, Proxy, TestClient (server-only), Include/External/Data (shared),
                 //        Shared (Go services), Validation (unknown→both), MCPGameServer (Go MCP harness),
+                //        BotArena (WASM arena bots — the 'Build WASM Bots' + 'Deploy Bots' stages
+                //        live in THIS pipeline, but arena-only pushes previously matched no
+                //        trigger at all, so edited bots were never rebuilt until an unrelated
+                //        server change came along),
                 //        deploy/go.work/docker-compose.proxy, Jenkinsfile.server (pipeline itself)
                 regexpFilterText: '$ref $files_added $files_modified $files_removed',
-                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(GameServer|Proxy|TestClient|Include|External|Shared|Validation|MCPGameServer)/|Data/|Src/(deploy|go\\.work|docker-compose\\.proxy)|\\.Jenkins/Jenkinsfile\\.server|scripts/dev-pg)"
+                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(GameServer|Proxy|TestClient|Include|External|Shared|Validation|MCPGameServer|BotArena)/|Data/|Src/(deploy|go\\.work|docker-compose\\.proxy)|\\.Jenkins/Jenkinsfile\\.server|scripts/dev-pg)"
             )
         }
 
@@ -154,6 +158,23 @@ def call(Map config) {
                 }
             }
 
+            // Data/GameData/ is gitignored — it's a build artifact produced
+            // from Data/Cards/* by Src/MCDCoreExt/export_done_cards.py against
+            // the DONE-cards registry. It must exist BEFORE the build stage:
+            // the MCDServerTest binary loads its card library from
+            // Data/GameData/Cards/* at runtime, and on branches with the
+            // MCD_DATA_DIR repoint (MCDClient bead mc-0xm) the GameServer
+            // `cmake --install` also copies Data/GameData/ into each versioned
+            // server dir. On branches where the GameData refactor hasn't
+            // landed (e.g. the older release branch) the target may not exist;
+            // the `|| echo ...` fallback keeps the pipeline backward-compatible.
+            stage('Populate GameData') {
+                when { expression { env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh 'make export-done || echo "[Populate GameData] make target missing on this branch — skipping"'
+                }
+            }
+
             stage('Build GameServer, TestClient & Proxy') {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
@@ -210,18 +231,36 @@ def call(Map config) {
                 }
             }
 
-            // Data/GameData/ is gitignored — it's a build artifact produced
-            // from Data/Cards/* by Src/MCDCoreExt/export_done_cards.py against
-            // the DONE-cards registry. The MCDServerTest binary loads its
-            // card library from Data/GameData/Cards/* at runtime, so we need
-            // to populate that directory before the Unit Tests stage. On
-            // branches where the GameData refactor hasn't landed (e.g. the
-            // older release branch) the target may not exist; the
-            // `|| echo ...` fallback keeps the pipeline backward-compatible.
-            stage('Populate GameData') {
-                when { expression { env.SERVER_CHANGED == 'true' } }
+            // Validated Card Data Pipeline (MCDClient bead mc-8ko, plan §4):
+            // validate the *generated* Data/GameData/ tree right after it is
+            // populated and before any consumer (Unit Tests / packaging) runs.
+            // Gated on config.validateGameData so it is inert for pipelines that
+            // do not opt in (main/release stay unaffected while the corpus is
+            // cleaned up — plan §7). config.validateGameDataHardFail flips it from
+            // a soft (UNSTABLE) gate to a blocking one.
+            stage('Validate GameData') {
+                when {
+                    expression { env.SERVER_CHANGED == 'true' && config.validateGameData }
+                }
                 steps {
-                    sh 'make export-done || echo "[Populate GameData] make target missing on this branch — skipping"'
+                    mcdValidateGameData(hardFail: config.validateGameDataHardFail ?: false)
+                }
+            }
+
+            // Hermetic build (MCDClient bead mc-0xm, plan §5, Scenario 3): with
+            // the generated data exported and validated, relocate the AUTHORING
+            // data (Data/Cards + Data/References) out of the workspace so every
+            // stage below — Unit Tests, Integration Test, artifact staging —
+            // proves nothing reads authoring data. Gated on
+            // config.stripAuthoringData: a branch opts in once its tests read
+            // generated Data/GameData/ only (features/card first). The build
+            // finishes stripped; the next build's checkout restores the tree.
+            stage('Strip Authoring Data') {
+                when {
+                    expression { env.SERVER_CHANGED == 'true' && config.stripAuthoringData }
+                }
+                steps {
+                    mcdStripAuthoringData()
                 }
             }
 
@@ -559,7 +598,42 @@ BOT_PASSWORD=${config.botPassword ?: ''}
 GAUNTLET_INSTANT_RESOLVE=${config.gauntletInstantResolve ?: ''}
 ENVEOF
                         """
+                        // Practice bots are spawned from BOT_PROJECT_ROOT, published by
+                        // mcdClientPipeline's "Publish Bot Runtime" stage in a DIFFERENT
+                        // job. Nothing ties the two together, so when an env's
+                        // botProjectPath is wrong or that stage is skipped, the tree
+                        // silently rots: the bot then loses the protocol handshake and
+                        // every play-vs-bot match on the env fails, while this pipeline
+                        // reports a clean deploy. GH #2188 — release-staging sat on the
+                        // 2026-07-14 build (protocol v41) against a v43 server for 12
+                        // days. Warn rather than fail: a stale bot runtime does not
+                        // affect human-vs-human matches.
+                        sh """
+                            BOT_EXT="${botProjectPath}/bin/lib/Linux-x86_64/libMCDCoreExt-d.so"
+                            if [ ! -f "\$BOT_EXT" ]; then
+                                echo "⚠️ BOT RUNTIME MISSING: \$BOT_EXT — play-vs-bot will not work on ${config.environment}."
+                                echo "   Check botProjectPath in this env's Jenkinsfile.client.* matches BOT_PROJECT_ROOT above."
+                            else
+                                bot_age=\$(stat -c %Y "\$BOT_EXT")
+                                srv_age=\$(stat -c %Y "bin/MCDProxy" 2>/dev/null || echo 0)
+                                skew=\$(( (srv_age - bot_age) / 86400 ))
+                                if [ "\$skew" -gt 1 ]; then
+                                    echo "⚠️ BOT RUNTIME STALE: \$BOT_EXT is \${skew} days older than this build."
+                                    echo "   A protocol bump since then means practice bots are rejected at the handshake."
+                                    echo "   Re-run this env's MCDClient job, or check botProjectPath vs BOT_PROJECT_ROOT."
+                                else
+                                    echo "✓ Bot runtime current (\$(stat -c %y "\$BOT_EXT"))"
+                                fi
+                            fi
+                        """
+
                         def containerName = "${composeProject}-proxy-1"
+
+                        // The commit the proxy image must be built from. Read from the
+                        // workspace rather than env.GIT_COMMIT: this pipeline performs
+                        // several checkouts (main + the target branch), so the env var
+                        // does not reliably name the branch we just built.
+                        def proxyCommit = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
 
                         def newHash = sh(script: "sha256sum bin/MCDProxy | cut -d' ' -f1", returnStdout: true).trim()
                         def oldHash = sh(script: "sha256sum ${config.deployPath}/MCDProxy 2>/dev/null | cut -d' ' -f1 || echo 'none'", returnStdout: true).trim()
@@ -595,19 +669,65 @@ ENVEOF
                                 done
                                 docker rm -f ${containerName} 2>/dev/null || true
 
-                                if [ "${binaryChanged}" = "true" ]; then
-                                    rm -f ${config.deployPath}/MCDProxy
-                                    cp bin/MCDProxy ${config.deployPath}/MCDProxy
-                                    chmod +x ${config.deployPath}/MCDProxy
-                                fi
+                                # Src/Proxy/Dockerfile COMPILES the proxy from its build
+                                # context, and 'docker compose build' takes that context
+                                # from the compose project dir (/var/opt/mechacorpsgames/Src)
+                                # — NOT this build's workspace. Nothing has ever refreshed
+                                # that tree: it sat at cc5fee0a/2026-05-01 while every build
+                                # here reported "proxy container restarted successfully", so
+                                # months of proxy commits were compiled out of a stale
+                                # checkout and never shipped. The 'bin/MCDProxy' this
+                                # pipeline builds, tests and hashes was only ever a
+                                # change-detection marker; no image or mount consumed it.
+                                #
+                                # Build the image straight from the workspace and tag it
+                                # exactly what compose would have produced, then bring the
+                                # service up with --no-build so compose adopts that image
+                                # instead of compiling its own. The project dir is left
+                                # alone: it is shared with other services and owned by
+                                # another user, so writing into it is both a cross-service
+                                # side effect and a permission failure waiting to happen.
+                                docker build \\
+                                    --no-cache \\
+                                    --build-arg GIT_COMMIT='${proxyCommit}' \\
+                                    -f Src/Proxy/Dockerfile \\
+                                    -t ${composeProject}-proxy:latest \\
+                                    Src
 
-                                cd /var/opt/mechacorpsgames/Src
-                                docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} build --no-cache proxy
-                                docker compose -p ${composeProject} -f docker-compose.proxy.yml --env-file ${envFile} up -d --force-recreate proxy
+                                # Compose DEFINITION from the workspace (so command args and
+                                # mounts track the branch) but project dir unchanged (so
+                                # container identity and relative paths do not move).
+                                docker compose -p ${composeProject} \\
+                                    --project-directory /var/opt/mechacorpsgames/Src \\
+                                    -f "\$(pwd)/Src/docker-compose.proxy.yml" \\
+                                    --env-file /var/opt/mechacorpsgames/Src/${envFile} \\
+                                    up -d --force-recreate --no-build proxy
 
                                 sleep 3
                                 if docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
-                                    echo "✓ ${config.environment} proxy container restarted successfully"
+                                    # Provenance gate. The image stamps the commit it was
+                                    # built from (Src/Proxy/Dockerfile LABEL). If the running
+                                    # container does not carry the commit this build tested,
+                                    # the image came from somewhere else — fail loudly here
+                                    # rather than let another silent-stale-proxy month pass.
+                                    want='${proxyCommit}'
+                                    got=\$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' ${containerName} 2>/dev/null || echo '')
+                                    if [ -n "\$want" ] && [ "\$got" != "\$want" ]; then
+                                        echo "✗ Proxy image provenance mismatch for ${config.environment}"
+                                        echo "  expected commit: \$want"
+                                        echo "  running image:   \${got:-<unstamped>}"
+                                        echo "  The proxy image was NOT built from this commit — see the build-context sync above."
+                                        exit 1
+                                    fi
+                                    echo "✓ ${config.environment} proxy container restarted successfully (commit \${got:-<unstamped>})"
+
+                                    # Marker LAST: it is the change-detection input for the
+                                    # next build, so writing it before the container is
+                                    # verified would make a failed deploy look up-to-date
+                                    # and skip the retry forever.
+                                    rm -f ${config.deployPath}/MCDProxy
+                                    cp bin/MCDProxy ${config.deployPath}/MCDProxy
+                                    chmod +x ${config.deployPath}/MCDProxy
                                     echo "${configHash}" > /tmp/.mcd-proxy-config-hash-${composeProject}
                                 else
                                     echo "✗ Failed to start proxy container"

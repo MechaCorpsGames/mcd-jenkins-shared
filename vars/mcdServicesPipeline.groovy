@@ -9,11 +9,23 @@ def call(Map config) {
     //   webhookToken: 'mcd-crash-reporting'
     //   jobName: 'MCDServices-Main'
 
+    // The deploy tree. EVERY stage below builds and deploys out of this
+    // directory, NOT out of the Jenkins workspace `checkout scm` populates —
+    // the compose files, the gitignored .env.* secrets, and the bind-mounted
+    // log volumes all live here. It therefore has to be synced to the branch
+    // being deployed before anything reads it (see 'Sync Src Tree'), exactly
+    // as mcdAppServicesPipeline does for its own srcRoot.
+    //
+    // The whole repo root is mounted, not just Src/: the sync needs .git, which
+    // lives at the root. Mounting only Src/ is what let this tree drift.
+    def srcRoot = '/var/opt/mechacorpsgames'
+    def srcDir = "${srcRoot}/Src"
+
     pipeline {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /opt/mechacorps:/opt/mechacorps -v /var/opt/mechacorpsgames/Src:/var/opt/mechacorpsgames/Src --network host --group-add 111 --group-add 995 --group-add 1000'
+                args "-v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.ssh:/var/lib/jenkins/.ssh:ro -v /var/lib/jenkins/.ssh:/home/jenkins/.ssh:ro -v /opt/mechacorps:/opt/mechacorps -v ${srcRoot}:${srcRoot} --network host --group-add 111 --group-add 995 --group-add 1000"
             }
         }
 
@@ -118,6 +130,71 @@ def call(Map config) {
             // the build UNSTABLE but does NOT block other services.
             // ================================================================
 
+            // Pin the deploy tree to the branch being deployed BEFORE any stage
+            // builds out of it. Without this the docker builds below compiled
+            // whatever source happened to be sitting in srcRoot, so a deploy
+            // could rebuild the image from scratch (--no-cache), recreate the
+            // container, pass its health check, and ship code weeks old — a
+            // green build that changed nothing. That is how the crash-reporting
+            // service ran a 2026-07-21 fix's parent commit until 2026-08-06
+            // (MCDClient issue #2350).
+            //
+            // Lifted from mcdAppServicesPipeline's 'Sync Src Tree', including
+            // the ownership repair and the git-init recovery, so both pipelines
+            // treat their deploy trees the same way.
+            stage('Sync Src Tree') {
+                when {
+                    expression {
+                        env.CRASH_REPORTING_CHANGED == 'true' ||
+                        env.WIKI_CHANGED == 'true' ||
+                        env.MONITORING_CHANGED == 'true'
+                    }
+                }
+                steps {
+                    sh """
+                        set -e
+
+                        # Repair ownership if root-owned files crept in (e.g. from
+                        # a manual sudo rsync or a docker build that wrote as root).
+                        # Without this, git checkout fails with "Permission denied".
+                        # This runs inside a Docker build-agent container, so host
+                        # sudo is not available — spawn a throwaway Alpine container
+                        # via the mounted Docker socket instead, which runs as root.
+                        if [ -d ${srcRoot} ]; then
+                            if find ${srcRoot} -maxdepth 2 ! -user \$(id -u) -print -quit 2>/dev/null | grep -q .; then
+                                echo "Repairing ownership on ${srcRoot} (foreign-owned files detected)"
+                                docker run --rm -v ${srcRoot}:${srcRoot} alpine chown -R \$(id -u):\$(id -g) ${srcRoot}
+                            fi
+                        fi
+
+                        if [ ! -d ${srcRoot}/.git ]; then
+                            if [ -d ${srcRoot} ] && [ "\$(ls -A ${srcRoot} 2>/dev/null)" ]; then
+                                # Directory exists with files but no .git — recover in
+                                # place rather than wiping gitignored secrets
+                                # (.env.crash-reporting, .env.monitoring).
+                                echo "Recovering ${srcRoot}: exists without .git, initializing in place"
+                                cd ${srcRoot}
+                                git init -q
+                                git remote add origin "\${GIT_URL}"
+                            else
+                                echo "Bootstrapping ${srcRoot} from \${GIT_URL}"
+                                git clone "\${GIT_URL}" ${srcRoot}
+                            fi
+                        fi
+                        cd ${srcRoot}
+                        git fetch origin --prune
+                        # -f -B: force-create-or-reset the local branch to
+                        # origin/<branch>, overwriting untracked files that would
+                        # otherwise collide on a freshly git-init'd deploy dir.
+                        git checkout -f -B ${config.branch} origin/${config.branch}
+                        # -fd (not -fdx): preserve gitignored secrets and the
+                        # bind-mounted logs/ directory.
+                        git clean -fd
+                        echo "Synced ${srcRoot} to \$(git rev-parse --short HEAD) on ${config.branch}"
+                    """
+                }
+            }
+
             stage('Deploy CrashReporting + MCP') {
                 when { expression { env.CRASH_REPORTING_CHANGED == 'true' } }
                 steps {
@@ -134,7 +211,7 @@ def call(Map config) {
                                 CGO_ENABLED=0 GOOS=linux GOWORK=off go build -o mcp-server .
                                 echo "✓ MCPServer binary built"
 
-                                cd /var/opt/mechacorpsgames/Src
+                                cd ${srcDir}
                                 docker compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting build --no-cache crash-reporting mcp-server
                                 docker compose -p src -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting up -d --force-recreate crash-reporting mcp-server
                                 sleep 5
@@ -160,7 +237,7 @@ def call(Map config) {
                                     fi
                                 done
                                 if [ "\$PASS" = "false" ]; then
-                                    cd /var/opt/mechacorpsgames/Src
+                                    cd ${srcDir}
                                     docker compose -f docker-compose.crash-reporting.yml --env-file .env.crash-reporting -p src logs --tail=50 crash-reporting mcp-server
                                     exit 1
                                 fi
@@ -184,7 +261,7 @@ def call(Map config) {
                             ]) {
                                 sh """
                                     export WIKI_URL=http://localhost:8070
-                                    cd /var/opt/mechacorpsgames
+                                    cd ${srcRoot}
                                     python3 Src/Wiki/load_wiki_pages.py
                                 """
                             }
@@ -202,8 +279,8 @@ def call(Map config) {
                             echo "Monitoring config changed — redeploying stack"
 
                             sh """
-                                cd /var/opt/mechacorpsgames/Src/Monitoring
-                                docker compose -f docker-compose.monitoring.yml --env-file /var/opt/mechacorpsgames/Src/.env.monitoring up -d --force-recreate
+                                cd ${srcDir}/Monitoring
+                                docker compose -f docker-compose.monitoring.yml --env-file ${srcDir}/.env.monitoring up -d --force-recreate
                                 sleep 5
 
                                 OK=false
