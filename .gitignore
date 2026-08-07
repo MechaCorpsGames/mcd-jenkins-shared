@@ -2,3 +2,8 @@
 .beads/*
 !.beads/config.yaml
 !.beads/metadata.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
