@@ -476,6 +476,10 @@ EOF
                                 bin/versions/ \
                                 Src/GameServer/build/Release/
 
+                            if [ ! -f scripts/verify_sentry_symbols.py ]; then
+                                echo "Cannot verify the upload: scripts/verify_sentry_symbols.py is not on this branch. Merge MCDClient main into this branch."
+                                exit 1
+                            fi
                             echo "Verifying the deployed binary is registered in Sentry..."
                             python3 scripts/verify_sentry_symbols.py \
                                 --org mechacorps-llc --project mcd-server \

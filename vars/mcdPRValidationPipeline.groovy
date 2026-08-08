@@ -340,7 +340,20 @@ def call(Map config) {
             stage('Script Tests') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
                 steps {
-                    sh 'make test-scripts'
+                    // Branch-skew guard, not a failure swallow. This library is
+                    // shared by every job, and release, features/backend and
+                    // features/card all lag main and lack this target, so a
+                    // bare `make test-scripts` would red-line PR validation on
+                    // those branches the moment this merges. A target that is
+                    // absent is skipped and said out loud; a target that exists
+                    // and fails still fails the build.
+                    sh '''
+                        if ! make -n test-scripts >/dev/null 2>&1; then
+                            echo "ℹ No test-scripts target on this branch, skipping. It arrives with the MCDClient change that adds scripts/verify_sentry_symbols.py."
+                            exit 0
+                        fi
+                        make test-scripts
+                    '''
                 }
             }
 

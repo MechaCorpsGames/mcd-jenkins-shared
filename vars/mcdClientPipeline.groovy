@@ -882,6 +882,10 @@ EOF
                                 Src/MCDCoreExt/build-windows/ \
                                 Src/MCDCoreExt/build-android/
 
+                            if [ ! -f scripts/verify_sentry_symbols.py ]; then
+                                echo "Cannot verify the upload: scripts/verify_sentry_symbols.py is not on this branch. Merge MCDClient main into this branch."
+                                exit 1
+                            fi
                             echo "Verifying the shipped library is registered in Sentry..."
                             python3 scripts/verify_sentry_symbols.py \
                                 --org mechacorps-llc --project mcd-client \
