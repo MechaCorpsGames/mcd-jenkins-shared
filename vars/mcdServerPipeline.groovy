@@ -434,6 +434,9 @@ EOF
                 }
             }
 
+            // Same contract as the client pipeline's stage of this name: a
+            // failed upload is reported, never swallowed, because a crash
+            // without symbols tells us nothing but the signal number.
             stage('Upload Debug Symbols') {
                 when {
                     expression { env.SERVER_CHANGED == 'true' && fileExists('bin/versions') }
@@ -441,26 +444,54 @@ EOF
                 steps {
                     script {
                         def sentryCliExists = sh(script: 'which sentry-cli', returnStatus: true) == 0
-                        if (sentryCliExists) {
-                            sh """
-                                export SENTRY_AUTH_TOKEN=\$(grep SENTRY_TOKEN /var/opt/mechacorpsgames/Src/.env.sentry | cut -d= -f2)
-                                echo "Uploading server debug symbols to Sentry..."
-                                sentry-cli --url https://us.sentry.io \
-                                    upload-dif --org mechacorps-llc --project mcd-server \
-                                    --include-sources \
-                                    bin/versions/ \
-                                    Src/GameServer/build/Release/ \
-                                    || echo "⚠️ Symbol upload failed (non-fatal)"
+                        if (!sentryCliExists) {
+                            env.SYMBOLS_UPLOADED = 'false'
+                            echo "⚠️ sentry-cli is not installed on the build agent, so server debug symbols were NOT uploaded. Native crashes from this build cannot be symbolicated."
+                            currentBuild.result = 'UNSTABLE'
+                            return
+                        }
+                        // `set +x` first: Jenkins runs sh with -x, which used to
+                        // echo the Sentry auth token into the console log.
+                        def status = sh(returnStatus: true, script: """
+                            set +x
+                            SENTRY_ENV=/var/opt/mechacorpsgames/Src/.env.sentry
+                            if [ ! -f "\$SENTRY_ENV" ]; then
+                                echo "Cannot authenticate to Sentry: \$SENTRY_ENV does not exist on this agent."
+                                exit 1
+                            fi
+                            SENTRY_AUTH_TOKEN=\$(sed -n 's/^SENTRY_TOKEN=//p' "\$SENTRY_ENV" | tr -d '"' | tr -d '[:space:]')
+                            if [ -z "\$SENTRY_AUTH_TOKEN" ]; then
+                                echo "Cannot authenticate to Sentry: SENTRY_TOKEN is empty in \$SENTRY_ENV."
+                                exit 1
+                            fi
+                            export SENTRY_AUTH_TOKEN
+                            set -e
 
-                                echo "Verifying uploaded symbols..."
-                                sentry-cli --url https://us.sentry.io \
-                                    debug-files check \
-                                    --org mechacorps-llc --project mcd-server \
-                                    bin/versions/${SERVER_VERSION_PATH} \
-                                    || echo "⚠️ Symbol verification failed (non-fatal)"
-                            """
+                            echo "Uploading server debug symbols to Sentry..."
+                            # --wait: block until Sentry has processed the files,
+                            # so the verification below cannot race the upload.
+                            sentry-cli --url https://us.sentry.io debug-files upload \
+                                --org mechacorps-llc --project mcd-server \
+                                --include-sources --wait \
+                                bin/versions/ \
+                                Src/GameServer/build/Release/
+
+                            if [ ! -f scripts/verify_sentry_symbols.py ]; then
+                                echo "Cannot verify the upload: scripts/verify_sentry_symbols.py is not on this branch. Merge MCDClient main into this branch."
+                                exit 1
+                            fi
+                            echo "Verifying the deployed binary is registered in Sentry..."
+                            python3 scripts/verify_sentry_symbols.py \
+                                --org mechacorps-llc --project mcd-server \
+                                --url https://us.sentry.io \
+                                bin/versions/${SERVER_VERSION_PATH}
+                        """)
+                        env.SYMBOLS_UPLOADED = status == 0 ? 'true' : 'false'
+                        if (status != 0) {
+                            echo "⚠️ Server debug symbols are NOT in Sentry for this build. Native crashes will symbolicate to <unknown> frames until this is fixed."
+                            currentBuild.result = 'UNSTABLE'
                         } else {
-                            echo "⚠️ sentry-cli not installed — debug symbols NOT uploaded. Install sentry-cli in the build agent to enable crash symbolication."
+                            echo "✅ Debug symbols uploaded and verified against Sentry."
                         }
                     }
                 }
@@ -803,6 +834,27 @@ ENVEOF
                         serverHost: config.serverHost,
                         tcpPort: config.tcpPort,
                         wsPort: config.wsPort
+                    )
+                }
+            }
+            // Declarative `post` runs `success` only on SUCCESS, so an UNSTABLE
+            // build would otherwise notify nobody.
+            unstable {
+                script {
+                    if (env.SERVER_CHANGED != 'true') {
+                        return
+                    }
+                    def detail = "⚠️ ${config.environment.capitalize()} finished UNSTABLE"
+                    if (env.SYMBOLS_UPLOADED == 'false') {
+                        detail = "⚠️ Server deployed, but debug symbols are NOT in Sentry. Native crashes will symbolicate to <unknown> frames."
+                    }
+                    discordNotify.failure(
+                        title: "MechaCorps Server Build",
+                        message: detail,
+                        jenkinsUrl: env.JENKINS_URL_BASE,
+                        jobName: config.jobName,
+                        environment: config.environment,
+                        branch: config.branch
                     )
                 }
             }

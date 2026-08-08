@@ -838,34 +838,66 @@ EOF
                 }
             }
 
+            // Without symbols every native crash in Sentry is 31 frames of
+            // <unknown>, so a failure here is reported, never swallowed. The
+            // stage marks the build UNSTABLE (the artifacts are still good) and
+            // the post block turns that into a Discord message.
             stage('Upload Debug Symbols') {
                 when { expression { env.CLIENT_CHANGED == 'true' } }
                 steps {
                     script {
                         env.BUILD_PHASE = 'Upload Debug Symbols'
                         def sentryCliExists = sh(script: 'which sentry-cli', returnStatus: true) == 0
-                        if (sentryCliExists) {
-                            sh """
-                                export SENTRY_AUTH_TOKEN=\$(grep SENTRY_TOKEN /var/opt/mechacorpsgames/Src/.env.sentry | cut -d= -f2)
-                                echo "Uploading client debug symbols for all platforms..."
-                                sentry-cli --url https://us.sentry.io \
-                                    upload-dif --org mechacorps-llc --project mcd-client \
-                                    --include-sources \
-                                    bin/lib/ \
-                                    Src/MCDCoreExt/build/Release/ \
-                                    Src/MCDCoreExt/build-windows/ \
-                                    Src/MCDCoreExt/build-android/ \
-                                    || echo "⚠️ Symbol upload failed (non-fatal)"
+                        if (!sentryCliExists) {
+                            env.SYMBOLS_UPLOADED = 'false'
+                            echo "⚠️ sentry-cli is not installed on the build agent, so client debug symbols were NOT uploaded. Native crashes from this build cannot be symbolicated."
+                            currentBuild.result = 'UNSTABLE'
+                            return
+                        }
+                        // `set +x` first: Jenkins runs sh with -x, which used to
+                        // echo the Sentry auth token into the console log.
+                        def status = sh(returnStatus: true, script: """
+                            set +x
+                            SENTRY_ENV=/var/opt/mechacorpsgames/Src/.env.sentry
+                            if [ ! -f "\$SENTRY_ENV" ]; then
+                                echo "Cannot authenticate to Sentry: \$SENTRY_ENV does not exist on this agent."
+                                exit 1
+                            fi
+                            SENTRY_AUTH_TOKEN=\$(sed -n 's/^SENTRY_TOKEN=//p' "\$SENTRY_ENV" | tr -d '"' | tr -d '[:space:]')
+                            if [ -z "\$SENTRY_AUTH_TOKEN" ]; then
+                                echo "Cannot authenticate to Sentry: SENTRY_TOKEN is empty in \$SENTRY_ENV."
+                                exit 1
+                            fi
+                            export SENTRY_AUTH_TOKEN
+                            set -e
 
-                                echo "Verifying uploaded symbols..."
-                                sentry-cli --url https://us.sentry.io \
-                                    debug-files check \
-                                    --org mechacorps-llc --project mcd-client \
-                                    bin/lib/Linux-x86_64/libMCDCoreExt.so \
-                                    || echo "⚠️ Symbol verification failed (non-fatal)"
-                            """
+                            echo "Uploading client debug symbols for all platforms..."
+                            # --wait: block until Sentry has processed the files,
+                            # so the verification below cannot race the upload.
+                            sentry-cli --url https://us.sentry.io debug-files upload \
+                                --org mechacorps-llc --project mcd-client \
+                                --include-sources --wait \
+                                bin/lib/ \
+                                Src/MCDCoreExt/build/Release/ \
+                                Src/MCDCoreExt/build-windows/ \
+                                Src/MCDCoreExt/build-android/
+
+                            if [ ! -f scripts/verify_sentry_symbols.py ]; then
+                                echo "Cannot verify the upload: scripts/verify_sentry_symbols.py is not on this branch. Merge MCDClient main into this branch."
+                                exit 1
+                            fi
+                            echo "Verifying the shipped library is registered in Sentry..."
+                            python3 scripts/verify_sentry_symbols.py \
+                                --org mechacorps-llc --project mcd-client \
+                                --url https://us.sentry.io \
+                                bin/lib/Linux-x86_64/libMCDCoreExt.so
+                        """)
+                        env.SYMBOLS_UPLOADED = status == 0 ? 'true' : 'false'
+                        if (status != 0) {
+                            echo "⚠️ Client debug symbols are NOT in Sentry for this build. Native crashes will symbolicate to <unknown> frames until this is fixed."
+                            currentBuild.result = 'UNSTABLE'
                         } else {
-                            echo "⚠️ sentry-cli not installed — debug symbols NOT uploaded. Install sentry-cli in the build agent to enable crash symbolication."
+                            echo "✅ Debug symbols uploaded and verified against Sentry."
                         }
                     }
                 }
@@ -891,6 +923,30 @@ EOF
                         version: env.CLIENT_VERSION,
                         serverUrl: config.serverUrl,
                         libSize: linuxSize
+                    )
+                }
+            }
+            // Declarative `post` runs `success` only on SUCCESS, so an UNSTABLE
+            // build would otherwise notify nobody. Debug symbol upload marks the
+            // build unstable, and a silent warning is what let months of failed
+            // uploads go unnoticed.
+            unstable {
+                script {
+                    if (env.CLIENT_CHANGED != 'true') {
+                        return
+                    }
+                    def phase = env.BUILD_PHASE ?: 'Unknown'
+                    def detail = "⚠️ Build finished UNSTABLE at: ${phase}"
+                    if (env.SYMBOLS_UPLOADED == 'false') {
+                        detail = "⚠️ Build artifacts are fine, but debug symbols are NOT in Sentry. Native crashes will symbolicate to <unknown> frames."
+                    }
+                    discordNotify.failure(
+                        title: "MechaCorps Client Build",
+                        message: detail,
+                        jenkinsUrl: env.JENKINS_URL_BASE,
+                        jobName: config.jobName,
+                        environment: config.environment,
+                        branch: config.branch
                     )
                 }
             }
