@@ -24,6 +24,7 @@ No live Jenkins required. Tests parse Groovy source.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -198,7 +199,10 @@ def test_script_tests_stage_skips_branches_without_the_target() -> None:
 def test_script_tests_stage_still_runs_the_target_when_present() -> None:
     """The guard must not turn into a permanent skip (mc-lxj5)."""
     body = _stage_body(_src(_PR_SRC), "Script Tests")
-    assert "\n                        make test-scripts\n" in body, (
+    # On its own line, so the probe (`make -n test-scripts`) does not satisfy
+    # this. Matched by regex rather than literal indentation so a reindent of
+    # the stage does not fail the build.
+    assert re.search(r"^\s*make test-scripts\s*$", body, re.MULTILINE), (
         "Script Tests must still invoke `make test-scripts` unguarded once the "
         "probe succeeds, otherwise the stage never tests anything. See mc-lxj5."
     )
