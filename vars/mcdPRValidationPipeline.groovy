@@ -333,6 +333,17 @@ def call(Map config) {
                 }
             }
 
+            // Pure-Python tests for the build/release tooling under scripts/.
+            // No Godot, no network, ~1s. Runs before the Godot suites so a
+            // broken release script fails fast. `scripts/**` is part of the
+            // client change filter, so any edit to those tools lands here.
+            stage('Script Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                steps {
+                    sh 'make test-scripts'
+                }
+            }
+
             stage('GDScript Tests') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
                 steps {
