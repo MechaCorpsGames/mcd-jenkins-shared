@@ -166,6 +166,7 @@ def call(Map config) {
                             env.AUCTION_HOUSE_CHANGED = 'true'
                             env.DOCKER_SMOKE_CHANGED = 'true'
                             env.CRASH_REPORTING_CHANGED = deployCrashReporting.toString()
+                            env.CRASH_REPORTING_SRC_CHANGED = 'true'
                         } else {
                             sh "git fetch origin ${baseRef} 2>/dev/null || true"
                             def changes = mcdChangeDetection.detect(baseRef)
@@ -177,13 +178,23 @@ def call(Map config) {
                             // does not own a crash stack never lights this up. It
                             // feeds anyWork and the deploy stage's when{} both.
                             env.CRASH_REPORTING_CHANGED = (deployCrashReporting && changes.crashReportingChanged).toString()
+                            // Deliberately NOT gated on deployCrashReporting: the
+                            // Postgres-backed Service Tests stage runs the module's
+                            // Go tests in every app-services environment, including
+                            // the ones whose crash stack another job deploys. Gating
+                            // the tests on the deploy flag is what left them
+                            // unexecuted: 'main' is not in crashEnvironments, so
+                            // CRASH_REPORTING_CHANGED was false for every
+                            // CrashReporting push to main.
+                            env.CRASH_REPORTING_SRC_CHANGED = changes.crashReportingChanged.toString()
                         }
 
                         def anyWork = (env.AUTH_CHANGED == 'true' ||
                                        env.ACCOUNT_SERVICE_CHANGED == 'true' ||
                                        env.AUCTION_HOUSE_CHANGED == 'true' ||
                                        env.DOCKER_SMOKE_CHANGED == 'true' ||
-                                       env.CRASH_REPORTING_CHANGED == 'true')
+                                       env.CRASH_REPORTING_CHANGED == 'true' ||
+                                       env.CRASH_REPORTING_SRC_CHANGED == 'true')
                         if (!anyWork) {
                             currentBuild.description += "\n⏭️ No app service changes — skipped"
                             currentBuild.result = 'NOT_BUILT'
@@ -197,7 +208,8 @@ def call(Map config) {
                     expression {
                         env.AUTH_CHANGED == 'true' ||
                         env.ACCOUNT_SERVICE_CHANGED == 'true' ||
-                        env.AUCTION_HOUSE_CHANGED == 'true'
+                        env.AUCTION_HOUSE_CHANGED == 'true' ||
+                        env.CRASH_REPORTING_SRC_CHANGED == 'true'
                     }
                 }
                 steps {
@@ -207,6 +219,15 @@ def call(Map config) {
                     // Auction for integration tests. PGHOST=localhost gates
                     // each module's `requireIntegrationDB(t)` per MCDClient
                     // #1443.
+                    //
+                    // CrashReporting joined this stage in MCDClient mc-56jd.
+                    // Its Postgres-backed tests, including the crash-dedup
+                    // suite from #2399/#2402, had never executed in any
+                    // pipeline: no stage ran them with a database, and the
+                    // module's own harness exited 0 when it could not reach
+                    // one. It runs through `make test-go-db`, which sets
+                    // MCDC_REQUIRE_DB_TESTS=1 so a missing or unreachable
+                    // database fails the stage instead of skipping quietly.
                     sh '''
                         set -e
                         # compose.yml hardcodes `name: mcd`, so every workspace
@@ -258,9 +279,41 @@ def call(Map config) {
                         fi
                         echo "Postgres reachable at $PGHOST:$PGPORT"
 
-                        (cd Src/Auth && PGDATABASE=mechacorps_auth go test ./...) && \
-                        (cd Src/AccountService && PGDATABASE=mechacorps_account go test ./...) && \
-                        (cd Src/AuctionHouse && PGDATABASE=mechacorps_auction go test ./...)
+                        # AUTH_CHANGED / ACCOUNT_SERVICE_CHANGED /
+                        # AUCTION_HOUSE_CHANGED / CRASH_REPORTING_SRC_CHANGED
+                        # are exported by the 'Detect Changes' stage's env
+                        # assignments. The stage now also wakes for a
+                        # CrashReporting-only change, so the app-service trio
+                        # is guarded rather than run unconditionally; its
+                        # behaviour is otherwise unchanged (any one of the
+                        # three still runs all three). set -e is in force, so
+                        # a failure inside either block fails the stage.
+                        if [ "$AUTH_CHANGED" = "true" ] || \
+                           [ "$ACCOUNT_SERVICE_CHANGED" = "true" ] || \
+                           [ "$AUCTION_HOUSE_CHANGED" = "true" ]; then
+                            (cd Src/Auth && PGDATABASE=mechacorps_auth go test ./...)
+                            (cd Src/AccountService && PGDATABASE=mechacorps_account go test ./...)
+                            (cd Src/AuctionHouse && PGDATABASE=mechacorps_auction go test ./...)
+                        else
+                            echo "Auth/AccountService/AuctionHouse unchanged, skipping their tests"
+                        fi
+
+                        # MCDClient's test-go-db target sets
+                        # MCDC_REQUIRE_DB_TESTS=1, which makes every escape the
+                        # old harness had (-short, MCDC_SKIP_DB_TESTS, unset
+                        # PGHOST, a database that never answered) a hard
+                        # failure. A green run here therefore means the
+                        # Postgres-backed crash tests really executed.
+                        #
+                        # MERGE ORDER: this needs MCDClient's `test-go-db`
+                        # (mc-56jd), which lands first. There is deliberately
+                        # no file-existence guard. A silent skip is the exact
+                        # failure mode this stage exists to end.
+                        if [ "$CRASH_REPORTING_SRC_CHANGED" = "true" ]; then
+                            PGDATABASE=mechacorps_crashes make test-go-db MODULE=CrashReporting
+                        else
+                            echo "CrashReporting unchanged, skipping its tests"
+                        fi
                     '''
                 }
             }
