@@ -320,6 +320,37 @@ def call(Map config) {
                 }
             }
 
+            // Generate Data/GameData/ before ANY test stage that reads card data.
+            //
+            // The server's own unit tests load the generated tree through
+            // CardLibrary: SetupPhaseContribDeck, DraftPoolBuilder,
+            // HandicapDraftBeginSync, DraftStateRestack, StateInjectorApply and
+            // others all fail with "Failed to open .../Data/GameData/Cards/
+            // Mecha.json" when it is missing. Nothing on the SERVER path produced
+            // it: the only producer in this pipeline was the MCDCoreExt stage
+            // below, gated on CLIENT_CHANGED, while 'Unit Tests' is gated on
+            // SERVER_CHANGED. A server-only PR therefore ran its unit tests
+            // against card data that nothing had generated -- 73 failures on
+            // MCD-PR-Main #1358, none of them in the code that PR touched.
+            //
+            // It stayed hidden because agents reuse their workspace, so a tree
+            // left behind by an earlier client-touching build was usually still
+            // sitting there. That also means this was never server-only-specific:
+            // it would surface on any clean agent.
+            //
+            // Gated the same as Setup Dependencies rather than on CLIENT_CHANGED:
+            // it is a Python pass over card JSON, trivial next to a GameServer
+            // build, and both halves consume the output.
+            stage('Populate GameData') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
+                steps {
+                    sh 'make export-done'
+                    // Fail here, loudly, rather than 20 minutes later as a wall of
+                    // unrelated-looking test failures.
+                    sh 'test -d Data/GameData/Cards'
+                }
+            }
+
             // MCDCoreExt Linux debug must be built before GDScript tests
             // because tests depend on GDExtension types (CardId, etc.)
             stage('Build MCDCoreExt Linux (for tests)') {
