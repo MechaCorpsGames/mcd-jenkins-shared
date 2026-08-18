@@ -207,19 +207,25 @@ def call(Map config) {
                     // separately; remove the catch when the agent has a
                     // buildx-capable docker.
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        try {
-                            sh 'make wasm-bots'
-                        } catch (hudson.AbortException e) {
-                            // Name the cause here and rethrow, leaving catchError
-                            // to do the marking exactly as before: this is the
-                            // only point that knows the wasm image is what went
-                            // soft, and post{ unstable } has no way to work it
-                            // out afterwards (bead mjs-q4x). Narrowed to
-                            // AbortException — what a non-zero sh throws — so an
-                            // aborted or interrupted build is never mislabelled
-                            // as a wasm failure.
-                            mcdUnstableReason('WASM bot build failed (the proxy is shipping the bots from the previous build)')
-                            throw e
+                        // script{} is required: a Declarative steps-block (and a
+                        // catchError body inside one) accepts only steps, so a bare
+                        // try/catch is a compile error — "Expected a step". This is
+                        // the same wrapper the other pipelines use for try/catch.
+                        script {
+                            try {
+                                sh 'make wasm-bots'
+                            } catch (hudson.AbortException e) {
+                                // Name the cause here and rethrow, leaving catchError
+                                // to do the marking exactly as before: this is the
+                                // only point that knows the wasm image is what went
+                                // soft, and post{ unstable } has no way to work it
+                                // out afterwards (bead mjs-q4x). Narrowed to
+                                // AbortException — what a non-zero sh throws — so an
+                                // aborted or interrupted build is never mislabelled
+                                // as a wasm failure.
+                                mcdUnstableReason('WASM bot build failed (the proxy is shipping the bots from the previous build)')
+                                throw e
+                            }
                         }
                     }
                 }
