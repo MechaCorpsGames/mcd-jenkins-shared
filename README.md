@@ -115,7 +115,48 @@ discordNotify.failure(
     environment: "production",
     branch: "main"
 )
+
+// Unstable notification — amber, and it does not @-mention anyone.
+// `reason` is env.UNSTABLE_REASON; see "Unstable builds must name their cause".
+discordNotify.unstable(
+    title: "Build",
+    message: "⚠️ Build finished with card validation errors",
+    reason: "card validation errors (validator exit 3)",
+    jenkinsUrl: "https://jenkins.example.com",
+    jobName: "MyJob",
+    environment: "production",
+    branch: "main"
+)
 ```
+
+## Unstable Builds Must Name Their Cause
+
+An UNSTABLE build is not a failed build — the artifacts exist, the deploy
+usually happened — so `post { unstable }` reports it in **amber** via
+`discordNotify.unstable`, never in failure red. Colouring soft failures red is
+how a team learns to skim past red.
+
+**If you add anything that marks a build UNSTABLE, record why at that site:**
+
+```groovy
+mcdUnstableReason('card validation errors (validator exit 3)')   // then mark
+catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') { /* ... */ }
+```
+
+`mcdUnstableReason` accumulates into `env.UNSTABLE_REASON`, `"; "`-joined and
+de-duplicated, so two things going soft in one build report both. The
+`post { unstable }` handlers read it and fall back to "finished with warnings"
+when nothing set it. Phrase the reason as a noun clause that reads after
+"Build finished with". `test/unit/test_mcd_unstable_notification.py` fails if a
+new UNSTABLE marker does not name itself.
+
+**Do not report a phase or stage name instead.** `post {}` used to say
+`Build finished UNSTABLE at: Initializing`, for two compounding reasons: a phase
+says where the build got *to*, not what went wrong, and `BUILD_PHASE` is
+declared in the pipeline `environment {}` block — declarative re-applies those
+entries as a contextual override, so the `env.BUILD_PHASE = '...'` assignments
+inside stages never reach `post {}` at all. **Never declare `UNSTABLE_REASON` in
+an `environment {}` block** or it freezes at that default the same way.
 
 ## Deploy Trees and the SSH Remote
 

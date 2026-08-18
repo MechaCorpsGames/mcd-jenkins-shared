@@ -291,7 +291,21 @@ def call(Map config) {
                             always {
                                 script {
                                     try {
-                                        junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'reports/**/results.xml'
+                                        // junit marks the build UNSTABLE by
+                                        // itself when tests fail, and
+                                        // post{ unstable } cannot tell that
+                                        // apart from any other soft failure
+                                        // after the fact — so the count is
+                                        // recorded here, where it is known
+                                        // (bead mjs-q4x). Only the int is kept:
+                                        // a step result held in a CPS local has
+                                        // to survive serialisation. `?: 0`
+                                        // covers older junit plugins, which
+                                        // return nothing from the step.
+                                        int failed = junit(allowEmptyResults: true, skipPublishingChecks: true, testResults: 'reports/**/results.xml')?.failCount ?: 0
+                                        if (failed) {
+                                            mcdUnstableReason("GDScript test failures (${failed} failed)")
+                                        }
                                     } catch (NoSuchMethodError e) {
                                         echo "JUnit plugin not installed — skipping test report publishing"
                                     }
@@ -851,6 +865,7 @@ EOF
                         if (!sentryCliExists) {
                             env.SYMBOLS_UPLOADED = 'false'
                             echo "⚠️ sentry-cli is not installed on the build agent, so client debug symbols were NOT uploaded. Native crashes from this build cannot be symbolicated."
+                            mcdUnstableReason('debug symbols not uploaded — sentry-cli is missing from the build agent')
                             currentBuild.result = 'UNSTABLE'
                             return
                         }
@@ -895,6 +910,7 @@ EOF
                         env.SYMBOLS_UPLOADED = status == 0 ? 'true' : 'false'
                         if (status != 0) {
                             echo "⚠️ Client debug symbols are NOT in Sentry for this build. Native crashes will symbolicate to <unknown> frames until this is fixed."
+                            mcdUnstableReason('debug symbols missing from Sentry (native crashes will not symbolicate)')
                             currentBuild.result = 'UNSTABLE'
                         } else {
                             echo "✅ Debug symbols uploaded and verified against Sentry."
@@ -930,19 +946,32 @@ EOF
             // build would otherwise notify nobody. Debug symbol upload marks the
             // build unstable, and a silent warning is what let months of failed
             // uploads go unnoticed.
+            //
+            // The message names the CAUSE, taken from env.UNSTABLE_REASON, which
+            // mcdUnstableReason records at whichever site actually went soft. It
+            // deliberately does not read env.BUILD_PHASE: that tracks where the
+            // build got TO, not what went wrong, and since BUILD_PHASE is
+            // declared in the environment{} block above, declarative re-applies
+            // that literal over the per-stage assignments so post{} only ever
+            // sees "Initializing". Together those produced the message this
+            // replaces — "Build finished UNSTABLE at: Initializing", which named
+            // a phase where nothing had happened yet (bead mjs-q4x).
             unstable {
                 script {
                     if (env.CLIENT_CHANGED != 'true') {
                         return
                     }
-                    def phase = env.BUILD_PHASE ?: 'Unknown'
-                    def detail = "⚠️ Build finished UNSTABLE at: ${phase}"
-                    if (env.SYMBOLS_UPLOADED == 'false') {
-                        detail = "⚠️ Build artifacts are fine, but debug symbols are NOT in Sentry. Native crashes will symbolicate to <unknown> frames."
-                    }
-                    discordNotify.failure(
+                    // Every cause recorded during this build, "; "-joined, so a
+                    // run that trips both the card gate and the symbol upload
+                    // reports both. The old if/else overwrote one with the other.
+                    def reason = env.UNSTABLE_REASON?.trim()
+                    def detail = reason
+                        ? "⚠️ Build finished with ${reason}"
+                        : "⚠️ Build finished with warnings — see the console log"
+                    discordNotify.unstable(
                         title: "MechaCorps Client Build",
                         message: detail,
+                        reason: reason,
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
                         environment: config.environment,

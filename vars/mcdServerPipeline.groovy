@@ -207,7 +207,20 @@ def call(Map config) {
                     // separately; remove the catch when the agent has a
                     // buildx-capable docker.
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        sh 'make wasm-bots'
+                        try {
+                            sh 'make wasm-bots'
+                        } catch (hudson.AbortException e) {
+                            // Name the cause here and rethrow, leaving catchError
+                            // to do the marking exactly as before: this is the
+                            // only point that knows the wasm image is what went
+                            // soft, and post{ unstable } has no way to work it
+                            // out afterwards (bead mjs-q4x). Narrowed to
+                            // AbortException — what a non-zero sh throws — so an
+                            // aborted or interrupted build is never mislabelled
+                            // as a wasm failure.
+                            mcdUnstableReason('WASM bot build failed (the proxy is shipping the bots from the previous build)')
+                            throw e
+                        }
                     }
                 }
             }
@@ -447,6 +460,7 @@ EOF
                         if (!sentryCliExists) {
                             env.SYMBOLS_UPLOADED = 'false'
                             echo "⚠️ sentry-cli is not installed on the build agent, so server debug symbols were NOT uploaded. Native crashes from this build cannot be symbolicated."
+                            mcdUnstableReason('debug symbols not uploaded — sentry-cli is missing from the build agent')
                             currentBuild.result = 'UNSTABLE'
                             return
                         }
@@ -489,6 +503,7 @@ EOF
                         env.SYMBOLS_UPLOADED = status == 0 ? 'true' : 'false'
                         if (status != 0) {
                             echo "⚠️ Server debug symbols are NOT in Sentry for this build. Native crashes will symbolicate to <unknown> frames until this is fixed."
+                            mcdUnstableReason('debug symbols missing from Sentry (native crashes will not symbolicate)')
                             currentBuild.result = 'UNSTABLE'
                         } else {
                             echo "✅ Debug symbols uploaded and verified against Sentry."
@@ -839,18 +854,31 @@ ENVEOF
             }
             // Declarative `post` runs `success` only on SUCCESS, so an UNSTABLE
             // build would otherwise notify nobody.
+            //
+            // The message names the CAUSE, taken from env.UNSTABLE_REASON, which
+            // mcdUnstableReason records at whichever site actually went soft —
+            // the WASM bot build, the symbol upload, the card gate. It replaces
+            // a bare "finished UNSTABLE", which told nobody what to go and fix
+            // (bead mjs-q4x). Do not swap in a phase/stage name here: that
+            // reports where the build got TO rather than what went wrong, which
+            // is the mistake the client pipeline made.
             unstable {
                 script {
                     if (env.SERVER_CHANGED != 'true') {
                         return
                     }
-                    def detail = "⚠️ ${config.environment.capitalize()} finished UNSTABLE"
-                    if (env.SYMBOLS_UPLOADED == 'false') {
-                        detail = "⚠️ Server deployed, but debug symbols are NOT in Sentry. Native crashes will symbolicate to <unknown> frames."
-                    }
-                    discordNotify.failure(
+                    // Every cause recorded during this build, "; "-joined, so a
+                    // run that trips both the WASM gate and the symbol upload
+                    // reports both. The old if/else overwrote one with the other.
+                    def reason = env.UNSTABLE_REASON?.trim()
+                    def envName = config.environment.capitalize()
+                    def detail = reason
+                        ? "⚠️ ${envName} finished with ${reason}"
+                        : "⚠️ ${envName} finished with warnings — see the console log"
+                    discordNotify.unstable(
                         title: "MechaCorps Server Build",
                         message: detail,
+                        reason: reason,
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
                         environment: config.environment,
