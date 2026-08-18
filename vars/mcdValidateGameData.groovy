@@ -50,6 +50,14 @@ def call(Map args = [:]) {
          "SOFT gate: marking build UNSTABLE, not blocking."
     echo '[Validate GameData] This flips to a blocking gate once the card corpus ' +
          'is clean (plan §7); pass validateGameDataHardFail: true to enforce.'
+
+    // Record WHY here, where the cause is known, rather than leaving post{} to
+    // infer it: a soft gate that marks a build UNSTABLE without saying so is
+    // how MCDClient-FeatureCard #92-#94 went out reporting nothing useful
+    // (bead mjs-q4x). The exit code rides along because it distinguishes a
+    // corpus with errored cards from the validator itself falling over.
+    mcdUnstableReason("card validation errors (validator exit ${status})")
+
     catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
         error("Validate GameData soft failure (validator exit ${status})")
     }
