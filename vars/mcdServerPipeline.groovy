@@ -481,14 +481,38 @@ EOF
                             export SENTRY_AUTH_TOKEN
                             set -e
 
-                            echo "Uploading server debug symbols to Sentry..."
-                            # --wait: block until Sentry has processed the files,
-                            # so the verification below cannot race the upload.
+                            # Only symbol-bearing artifacts. The build trees also contain .o objects
+                            # under CMakeFiles/ and CMake compiler-probe binaries, which carry no
+                            # symbolication value, inflate every upload, and are what Sentry rejected
+                            # with "an unknown error occurred" on MCDClient-Main #1109 and #1110.
+                            SYMBOL_PATHS="bin/versions/"
+                            for d in Src/GameServer/build/Release; do
+                                if [ -d "\$d" ]; then
+                                    SYMBOL_PATHS="\$SYMBOL_PATHS \$(find "\$d" -type f \\( -name '*.so' -o -name '*.dll' -o -name '*.pdb' \\) | tr '\\n' ' ')"
+                                fi
+                            done
+
+                            echo "Uploading server debug symbols for all platforms..."
+                            # --wait: block until Sentry has processed the files, so the
+                            # verification below cannot race the upload.
+                            #
+                            # The upload runs WITHOUT -e on purpose. sentry-cli exits non-zero if ANY
+                            # file fails, and a Sentry-side "still processing"/"unknown error" on one
+                            # file is not evidence that the shipped library is missing. The
+                            # verification below asks the only question that matters -- is THIS
+                            # binary's build id registered in Sentry -- so it, not the uploader's
+                            # exit code, decides the stage. Failures are still reported, never
+                            # swallowed: a failed verification marks the build UNSTABLE below.
+                            set +e
                             sentry-cli --url https://us.sentry.io debug-files upload \
                                 --org mechacorps-llc --project mcd-server \
                                 --include-sources --wait \
-                                bin/versions/ \
-                                Src/GameServer/build/Release/
+                                \$SYMBOL_PATHS
+                            UPLOAD_STATUS=\$?
+                            set -e
+                            if [ "\$UPLOAD_STATUS" -ne 0 ]; then
+                                echo "sentry-cli exited \$UPLOAD_STATUS. Verifying what actually reached Sentry rather than assuming nothing did."
+                            fi
 
                             if [ ! -f scripts/verify_sentry_symbols.py ]; then
                                 echo "Cannot verify the upload: scripts/verify_sentry_symbols.py is not on this branch. Merge MCDClient main into this branch."
