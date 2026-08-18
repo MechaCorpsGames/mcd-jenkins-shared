@@ -222,3 +222,59 @@ def test_script_tests_stage_does_not_swallow_test_failures() -> None:
     assert "|| true" not in body, (
         "Script Tests must not swallow failures with `|| true`. See mc-lxj5."
     )
+
+
+# ---------------------------------------------------------------------------
+# The upload must send symbols, not build scratch (mc-lg8x)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", _UPLOAD_PIPELINES, ids=lambda p: p.name)
+def test_upload_selects_symbol_files_not_whole_build_trees(path: Path) -> None:
+    """Uploading a build tree wholesale ships .o objects and CMake probes.
+
+    MCDClient-Main #1109 and #1110 both went UNSTABLE with "some symbols did
+    not process correctly", and the files Sentry rejected were
+    CMakeDetermineCompilerABI_*.bin and .o objects under CMakeFiles/ — build
+    scratch with no symbolication value that nobody ships. The stage now
+    selects symbol-bearing extensions out of the build trees instead of
+    handing sentry-cli the directory.
+    """
+    body = _stage_body(_src(path), "Upload Debug Symbols")
+    assert "SYMBOL_PATHS" in body, (
+        f"{path.name} Upload Debug Symbols no longer builds a SYMBOL_PATHS "
+        "list. Passing a build directory to sentry-cli uploads .o objects and "
+        "CMake compiler-probe binaries, which is what failed #1109/#1110. "
+        "See mc-lg8x."
+    )
+    assert "-name '*.so'" in body, (
+        f"{path.name} Upload Debug Symbols must filter the build trees down to "
+        "symbol-bearing files. See mc-lg8x."
+    )
+
+
+@pytest.mark.parametrize("path", _UPLOAD_PIPELINES, ids=lambda p: p.name)
+def test_verification_runs_even_when_the_upload_reports_failure(path: Path) -> None:
+    """A partial upload failure must not skip the check that answers the question.
+
+    sentry-cli exits non-zero when ANY file fails, including files we never
+    ship. Under `set -e` that aborted the block before
+    verify_sentry_symbols.py ran, so the build reported "symbols missing"
+    without anyone establishing whether the shipped library was in Sentry.
+    The verification is the real gate and must always execute.
+
+    This does NOT reintroduce the mc-lxj5 swallow: a failed *verification*
+    still marks the build UNSTABLE, which
+    test_upload_failure_marks_build_unstable pins.
+    """
+    body = _stage_body(_src(path), "Upload Debug Symbols")
+    assert "UPLOAD_STATUS" in body, (
+        f"{path.name} Upload Debug Symbols must capture the uploader's exit "
+        "status rather than letting `set -e` abort before verification. "
+        "See mc-lg8x."
+    )
+    upload_at = body.index("debug-files upload")
+    verify_at = body.index("verify_sentry_symbols.py")
+    assert upload_at < verify_at, (
+        f"{path.name} verification must follow the upload, not precede it."
+    )
