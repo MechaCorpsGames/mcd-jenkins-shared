@@ -443,6 +443,61 @@ def call(Map config) {
                 }
             }
 
+            // Xvfb UI tests (mc-qc90). The headless GDScript stage above cannot
+            // prove that a Control renders, that a mouse wheel reaches a
+            // ScrollContainer, or that focus traverses: the headless display
+            // server draws nothing and reports no geometry. MCDClient ships
+            // .Jenkins/Jenkinsfile.ui-tests for exactly this, and nothing has ever
+            // triggered it, so that whole class of test has never run on a PR.
+            //
+            // Runs inside THIS job rather than by triggering that one: whether any
+            // Jenkins job loads that file is unverified (MCDClient
+            // .Jenkins/JOBS.md records the status and what would settle it), and a
+            // second job is a second executor on a controller that is already the
+            // bottleneck.
+            //
+            // OPT-IN PER BRANCH through config.uiTests.enabled, the same shape as
+            // determinismHarness above. It is not on by default: until mc-1zjn
+            // reaches a branch, `make test-gdscript-ui` runs the whole tests/ tree
+            // under a real display, including tests that assert headless-only
+            // behaviour, and cannot pass on any commit there.
+            //
+            // A missing xvfb-run FAILS this stage rather than skipping it. A UI
+            // gate that quietly does nothing is the exact defect mc-qc90 was filed
+            // for, and the agent fix is one apt-get.
+            stage('UI Tests (Xvfb)') {
+                when {
+                    expression {
+                        env.PR_ALREADY_MERGED != 'true' &&
+                        env.CLIENT_CHANGED == 'true' &&
+                        config.uiTests?.enabled == true
+                    }
+                }
+                steps {
+                    sh '''
+                        if ! command -v xvfb-run >/dev/null 2>&1; then
+                            echo "xvfb-run is not installed on this agent, so the UI gate cannot run."
+                            echo "It is a real gate, not an advisory one, so this fails rather than skips."
+                            echo "Fix: sudo apt-get install -y xvfb"
+                            exit 1
+                        fi
+                        rm -f test-results/gdscript-ui.xml
+                        make test-gdscript-ui
+                    '''
+                }
+                post {
+                    always {
+                        script {
+                            try {
+                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: config.uiTests?.junit ?: 'test-results/gdscript-ui.xml'
+                            } catch (NoSuchMethodError e) {
+                                echo "JUnit plugin not installed — skipping test report publishing"
+                            }
+                        }
+                    }
+                }
+            }
+
             // Card-validator addon ships its own bespoke runner under
             // addons/card_validator/tests/ (predates GdUnit4 in this addon).
             // `make test-validator` invokes the headless runner and writes
