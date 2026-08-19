@@ -186,6 +186,37 @@ def call(Map config) {
                 }
             }
 
+            // Fail a PR that adds an ADR reverting to the retired NNNN- scheme, or
+            // whose YYYY-MM-DD-slug identifier already exists on the base ref.
+            //
+            // Deliberately NOT gated on CLIENT_CHANGED, unlike the other script
+            // checks. docs/** classifies as 'docs' in mcdChangeDetection, so a
+            // docs-only PR (which is exactly what a standalone ADR PR is) leaves
+            // CLIENT_CHANGED false and would skip the one gate written to police
+            // it. Costs well under a second and needs no build.
+            //
+            // The base is named explicitly rather than guessed: 'Checkout PR Merge
+            // Ref' above fetches origin/${targetBranch} and merges the PR head onto
+            // it, so that ref is the true base and the working tree is the merge.
+            stage('ADR Identifier Gate') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                steps {
+                    // Branch-skew guard, same shape as 'Script Tests' below: this
+                    // library is shared by every job, and release / features/backend
+                    // / features/card all lag main and lack this target, so a bare
+                    // make would red-line them the moment this merges. A target that
+                    // is absent is skipped and said out loud; a target that exists
+                    // and fails still fails the build.
+                    sh """
+                        if ! make -n check-adr-ids >/dev/null 2>&1; then
+                            echo "ℹ No check-adr-ids target on this branch, skipping. It arrives with the MCDClient change that adds scripts/check_adr_ids.py."
+                            exit 0
+                        fi
+                        python3 scripts/check_adr_ids.py --base origin/${config.targetBranch}
+                    """
+                }
+            }
+
             stage('Go Lint') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
