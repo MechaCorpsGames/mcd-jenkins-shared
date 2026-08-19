@@ -46,10 +46,7 @@ def call(Map config) {
                     [key: 'commit_author', value: '$.head_commit.author.name'],
                     [key: 'pusher_name', value: '$.pusher.name'],
                     [key: 'commits_count', value: '$.commits.length()'],
-                    [key: 'before_sha', value: '$.before'],
-                    [key: 'files_added', value: '$.commits[*].added[*]'],
-                    [key: 'files_modified', value: '$.commits[*].modified[*]'],
-                    [key: 'files_removed', value: '$.commits[*].removed[*]']
+                    [key: 'before_sha', value: '$.before']
                 ],
                 causeString: "Triggered by push to ${config.branch}",
                 token: config.webhookToken,
@@ -57,16 +54,34 @@ def call(Map config) {
                 printContributedVariables: true,
                 printPostContent: false,
                 silentResponse: false,
-                // Filter: only trigger when the push is to our branch AND touches server-relevant paths
-                // Paths: GameServer, Proxy, TestClient (server-only), Include/External/Data (shared),
-                //        Shared (Go services), Validation (unknown→both), MCPGameServer (Go MCP harness),
-                //        BotArena (WASM arena bots — the 'Build WASM Bots' + 'Deploy Bots' stages
-                //        live in THIS pipeline, but arena-only pushes previously matched no
-                //        trigger at all, so edited bots were never rebuilt until an unrelated
-                //        server change came along),
-                //        deploy/go.work/docker-compose.proxy, Jenkinsfile.server (pipeline itself)
-                regexpFilterText: '$ref $files_added $files_modified $files_removed',
-                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(GameServer|Proxy|TestClient|Include|External|Shared|Validation|MCPGameServer|BotArena)/|Data/|Src/(deploy|go\\.work|docker-compose\\.proxy)|\\.Jenkins/Jenkinsfile\\.server|scripts/dev-pg)"
+                // Filter on the ref ONLY. Path filtering deliberately does not
+                // happen here: see the 'Detect Changes' stage below, which is
+                // what actually decides whether this build does any work.
+                //
+                // This used to also match against $.commits[*].{added,modified,
+                // removed}[*]. Those JSONPaths flatten to one env var per file
+                // PLUS an aggregate var holding the whole list as a single
+                // string, and the plugin injects all of them into the build
+                // environment. A cascade merge made that aggregate exceed the
+                // kernel's MAX_ARG_STRLEN (131,072 B, the cap on ONE env
+                // string, not on the environment as a whole), after which every
+                // exec from the build JVM failed with E2BIG. The build died on
+                // its first exec, `git init`, while cloning THIS library,
+                // before any Jenkinsfile ran. See MCDClient bead mc-4qz7: the
+                // measured client pushes carried a 171,999 B and a 221,028 B
+                // files_added. The server jobs share the same trigger shape and
+                // the same cascade pushes, so they were one cascade away from
+                // the identical failure.
+                //
+                // Dropping the path filter cannot skip a build that used to
+                // run: the trigger was ANDed with SERVER_CHANGED /
+                // MCP_GAME_SERVER_CHANGED, and those gates are still here. It
+                // only lets a few more builds start and immediately mark
+                // themselves NOT_BUILT. Every other pipeline in this library
+                // (app services, services, discord bot) already triggers on
+                // $ref alone for the same reason.
+                regexpFilterText: '$ref',
+                regexpFilterExpression: "refs/heads/${config.branch}"
             )
         }
 

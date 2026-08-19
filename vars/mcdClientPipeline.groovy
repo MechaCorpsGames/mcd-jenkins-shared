@@ -61,10 +61,7 @@ def call(Map config) {
                     [key: 'commit_message', value: '$.head_commit.message'],
                     [key: 'commit_author', value: '$.head_commit.author.name'],
                     [key: 'pusher_name', value: '$.pusher.name'],
-                    [key: 'before_sha', value: '$.before'],
-                    [key: 'files_added', value: '$.commits[*].added[*]'],
-                    [key: 'files_modified', value: '$.commits[*].modified[*]'],
-                    [key: 'files_removed', value: '$.commits[*].removed[*]']
+                    [key: 'before_sha', value: '$.before']
                 ],
                 causeString: "Triggered by push to ${config.branch}",
                 token: config.webhookToken,
@@ -72,11 +69,31 @@ def call(Map config) {
                 printContributedVariables: true,
                 printPostContent: false,
                 silentResponse: false,
-                // Filter: only trigger when the push is to our branch AND touches client-relevant paths
-                // Paths: MCDCoreExt (GDExtension), Include/External/Data (shared), Validation (unknown→both),
-                //        all GDScript/asset dirs, project.godot, Jenkinsfile.client (pipeline itself)
-                regexpFilterText: '$ref $files_added $files_modified $files_removed',
-                regexpFilterExpression: "refs/heads/${config.branch}[\\s\\S]*(Src/(MCDCoreExt|Include|External|Validation)/|Data/|GameModes/|Menus/|DeckBuilder/|CardLibrary|Resources/|Onboard/|Game/|Sandbox/|tests/|scripts/|addons/|Assets/|Export/|Generated/|project\\.godot|export_presets\\.cfg|build-godot\\.sh|\\.Jenkins/Jenkinsfile\\.client)"
+                // Filter on the ref ONLY. Path filtering deliberately does not
+                // happen here: see the 'Detect Changes' stage below, which is
+                // what actually decides whether this build does any work.
+                //
+                // This used to also match against $.commits[*].{added,modified,
+                // removed}[*]. Those JSONPaths flatten to one env var per file
+                // PLUS an aggregate var holding the whole list as a single
+                // string, and the plugin injects all of them into the build
+                // environment. A cascade merge made that aggregate exceed the
+                // kernel's MAX_ARG_STRLEN (131,072 B, the cap on ONE env
+                // string, not on the environment as a whole), after which every
+                // exec from the build JVM failed with E2BIG. The build died on
+                // its first exec, `git init`, while cloning THIS library,
+                // before any Jenkinsfile ran. Measured on the two pushes that
+                // broke: files_added was 171,999 B (MCDClient-FeatureBackend
+                // #528) and 221,028 B (MCDClient-FeatureCard #95).
+                //
+                // Dropping the path filter cannot skip a build that used to
+                // run: the trigger was ANDed with CLIENT_CHANGED, and that gate
+                // is still here. It only lets a few more builds start and
+                // immediately mark themselves NOT_BUILT. Every other pipeline
+                // in this library (app services, services, discord bot) already
+                // triggers on $ref alone for the same reason.
+                regexpFilterText: '$ref',
+                regexpFilterExpression: "refs/heads/${config.branch}"
             )
         }
 
