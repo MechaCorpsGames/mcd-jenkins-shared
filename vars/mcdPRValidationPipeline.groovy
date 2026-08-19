@@ -505,6 +505,50 @@ def call(Map config) {
                 }
             }
 
+            // C++ gtest suite for the TestClient (Src/TestClient/Test/), 290 tests
+            // including the replay harness tests under Test/replay/. The
+            // TestClient binary was already built by the stage above, and
+            // Src/TestClient/build.py has always accepted --test, but no Makefile
+            // target ever invoked it, so the suite compiled on every build and ran
+            // nowhere. That is how ProtocolVersionPinTest's kExpectedProtocolVersion
+            // sat at 42 while PROTOCOL_VERSION reached 45: the pin could not fail
+            // because nothing executed it. Same shape as 'Validation C++ Tests'.
+            //
+            // MODE=release reuses the Release tree that 'Build GameServer,
+            // TestClient & Proxy' just produced, so the prerequisite build is
+            // incremental rather than a second full compile.
+            //
+            // THE STAGE NAME IS DELIBERATELY 'TestClient Unit Tests' AND MUST NOT
+            // IMPLY DETERMINISM IS VERIFIED. The replay harness does not yet check
+            // determinism: ReplaySession::Run validates the action-log header, walks
+            // the entries to confirm they parse, counts them, and returns
+            // ExitCode::Identical. It never connects to a GameServer, and it hands
+            // EmitTrace an unpopulated CheckpointSampler, so every run reports
+            // "checkpoint snapshots captured = 0" and all three committed baselines
+            // are the empty {"checkpoints":[]} (ReplaySession.cpp:209-213 says so
+            // itself). A green line here means the action log PARSES. Real comparison
+            // arrives in mc-9t1.14. A stage name is what people read instead of the
+            // source, so naming this 'Determinism Harness' would switch on a green
+            // light for a check that does not exist.
+            //
+            // Branch-skew guard, not a failure swallow, same as 'Script Tests':
+            // this library is shared by every job, and release, features/backend
+            // and features/card lack the test-testclient target until the MCDClient
+            // change reaches them. Absent target is skipped and said out loud; a
+            // target that exists and fails still fails the build.
+            stage('TestClient Unit Tests') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                steps {
+                    sh '''
+                        if ! make -n test-testclient >/dev/null 2>&1; then
+                            echo "No test-testclient target on this branch, skipping. It arrives with the MCDClient change that wires MCDTestClientTest into the Makefile."
+                            exit 0
+                        fi
+                        make test-testclient MODE=release
+                    '''
+                }
+            }
+
             stage('Proxy Unit Tests') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
