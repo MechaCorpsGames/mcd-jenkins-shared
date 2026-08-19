@@ -40,6 +40,43 @@ def call(Map config) {
 
         options {
             buildDiscarder(logRotator(numToKeepStr: '10'))
+            // Serialize builds of this job. Every stage below reads and writes
+            // ONE shared deploy tree (srcRoot, above), so two builds running at
+            // once fight over it. Only MCDServices-Main uses this pipeline, so
+            // serializing the job serializes srcRoot.
+            //
+            // That race is what took #563 down on 2026-08-18 (MCDClient
+            // mc-2upj). #562 and #563 overlapped (#563 was handed the
+            // "MCDServices-Main@2" workspace, which is Jenkins saying the base
+            // one was still busy), both ran `git fetch origin --prune` in
+            // srcRoot, and #562 won. #563's fetch then failed on exactly the
+            // seven refs #562 had just moved, each one reading:
+            //
+            //   cannot lock ref 'refs/remotes/origin/main':
+            //     is at 2e98e919 but expected 3212b14a
+            //
+            // i.e. the loser found its own update already applied. The four
+            // brand-new branches in the same fetch succeeded, because git skips
+            // the old-value check when it CREATES a remote-tracking ref. That
+            // asymmetry looks like packed-refs corruption and is not: nothing
+            // was wedged, and #564 went green with no intervention.
+            //
+            // The fetch error is the loud half. The quiet half is worse: #562
+            // logged "Synced /var/opt/mechacorpsgames to 2e98e919", which is
+            // #563's commit, not its own (b84e72f), and then deployed the wiki
+            // out of that tree and reported SUCCESS. A build must not deploy a
+            // tree another build reset underneath it. That is the same class of
+            // failure the Sync Src Tree comment below exists to prevent.
+            //
+            // Do NOT "fix" the fetch by retrying it. A retry lets the losing
+            // build win the second time and reset srcRoot while the other build
+            // is still building out of it, which turns a red build into a
+            // silently wrong deploy.
+            //
+            // Same guard, same reason, as mcdAppServicesPipeline. This pipeline
+            // lifted that one's Sync Src Tree stage without the option that
+            // makes the stage safe.
+            disableConcurrentBuilds()
         }
 
         environment {
