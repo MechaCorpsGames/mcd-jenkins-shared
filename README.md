@@ -237,13 +237,58 @@ After creating the Jenkins jobs, configure GitHub webhooks:
 3. **Content type**: `application/json`
 4. **Events**: Select `Pushes` and `Pull requests`
 
-Webhook tokens:
-- `mcdserver-main` - Server pipeline (main branch)
-- `mcdserver-release` - Server pipeline (release branch)
-- `mcdclient-main` - Client pipeline (main branch)
-- `mcdclient-release` - Client pipeline (release branch)
-- `mcd-pr-main` - PR validation pipeline (PRs targeting main)
-- `mcd-pr-release` - PR validation pipeline (PRs targeting release)
+Webhook tokens. **This list is the tokens MCDClient's Jenkinsfiles declare, not the
+tokens registered on GitHub.** A token does nothing until a Jenkins job carrying it has
+been built at least once, so a token appearing here is a claim by a file, not evidence of
+a working trigger. Read from `MCDClient/.Jenkins/` on 2026-08-19:
+
+| Token | Declared by | Note |
+|---|---|---|
+| `mcdserver-main` | `Jenkinsfile.server.main` | |
+| `mcdserver-release` | `Jenkinsfile.server.release` | |
+| `mcdserver-feature-backend` | `Jenkinsfile.server.feature-backend` | |
+| `mcdserver-feature-card` | `Jenkinsfile.server.feature-card` | |
+| `mcdclient-main` | `Jenkinsfile.client.main` | |
+| `mcdclient-release` | `Jenkinsfile.client.release` | |
+| `mcdclient-feature-backend` | `Jenkinsfile.client.feature-backend` | |
+| `mcdclient-feature-card` | `Jenkinsfile.client.feature-card` | |
+| `mcdappservices-main` | `Jenkinsfile.appservices.main` | |
+| `mcdappservices-release` | `Jenkinsfile.appservices.release` | |
+| `mcdappservices-feature-backend` | `Jenkinsfile.appservices.feature-backend` | |
+| `mcdappservices-feature-card` | `Jenkinsfile.appservices.feature-card` | |
+| `mcdservices-main` | `Jenkinsfile.services.main` | |
+| `mcd-discord-bot-main` | `Jenkinsfile.discord-bot.main` | |
+| `mcd-crash-reporting` | `Jenkinsfile.crash-reporting` | The job name this file declares is not on the controller. Unsettled; see JOBS.md. |
+| `mcd-pr-main` | `Jenkinsfile.pr.main` | |
+| `mcd-pr-release` | `Jenkinsfile.pr.release` | |
+| `mcd-pr-feature-backend` | `Jenkinsfile.pr.feature-backend` | **No job exists for this token.** MCD-PR-FeatureBackend returns 404, so nothing consumes it, and features/backend PRs get no validation at all (mc-fiu5). |
+
+## A Jenkinsfile is not a job
+
+Jobs here are created by hand in the controller UI. There is no job-config-as-code in
+this repo or in MCDClient, so a committed Jenkinsfile runs only if somebody made a job
+whose Script Path points at it. Nothing in either repo notices when that step is skipped.
+
+It has been skipped, and for months. `MCDClient/.Jenkins/Jenkinsfile.pr.feature-backend`
+has read like a full PR gate since 2026-05-26, determinism harness included, while
+`MCD-PR-FeatureBackend` has never existed: it returns HTTP 404 and across the last 25
+merged PRs targeting features/backend, zero carry a `jenkins/pr-validation` check
+(mc-fiu5). `MCD-Determinism-Harness-Nightly` is in the same state, so its cron has never
+fired (mc-mhgd).
+
+**`MCDClient/.Jenkins/JOBS.md` is the per-file record**: every Jenkinsfile against the
+job it declares, with a status of `present`, `absent` or `unverified`, guarded by
+`tests/test_jenkins_job_manifest.py` in that repo. Update it in the same change that
+creates or retires a job. The table below is the starting set for a fresh controller;
+JOBS.md is what is true today.
+
+Note that `jobName:` is a **label, not a binding**. The pipelines pass it to
+`discordNotify`, which builds `${jenkinsUrl}/job/${jobName}/${BUILD_NUMBER}/`
+(`vars/discordNotify.groovy:74`). A job can load a Jenkinsfile whose `jobName` says
+something else; the cost is a Discord build link that 404s, not a pipeline that fails to
+run. `MCDClient/.Jenkins/Jenkinsfile.server.release` declares `MCDServer-Release-Staging`
+while the controller lists `MCDServer-Release`, which is exactly that shape and is
+recorded as unverified rather than guessed at.
 
 ## Jenkins Jobs to Create
 
@@ -255,6 +300,14 @@ Webhook tokens:
 | MCDClient-Release | `Jenkinsfile.client.release` | release | Client prod builds |
 | MCD-PR-Main | `Jenkinsfile.pr.main` | * | PR validation (main) |
 | MCD-PR-Release | `Jenkinsfile.pr.release` | * | PR validation (release) |
+
+The controller ran 19 jobs when this was read on 2026-08-19, so the six above are a
+subset and always were: the feature-backend and feature-card variants of the server,
+client and appservices pipelines, plus MCDServices-Main, MCDDiscordBot-Main,
+MCDPlay-Upload, MCDSteam-Upload and MCDServer-Release-Promote, all exist and none were
+listed here. Two jobs that MCDClient Jenkinsfiles ask for do **not** exist:
+MCD-PR-FeatureBackend and MCD-Determinism-Harness-Nightly. Whether to create or
+deliberately retire those is tracked as mc-rptw.
 
 ### Deploy Jobs (MCDServer-*, MCDClient-*)
 
