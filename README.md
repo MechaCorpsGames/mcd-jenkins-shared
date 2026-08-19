@@ -190,6 +190,44 @@ git -C <tree> remote set-url origin git@github.com:MechaCorpsGames/MCDClient.git
 git config --global --unset-all url.https://github.com/.insteadOf   # if an SSH->HTTPS rewrite is present
 ```
 
+### A deploy tree is shared mutable state: serialize the job
+
+`Sync Src Tree` fetches, force-resets and cleans one directory that every later
+stage then builds and deploys out of. Nothing about that is per-build. **Any
+pipeline with a `Sync Src Tree` stage must also declare
+`disableConcurrentBuilds()`**, and `test/unit/test_sync_src_tree_serializes_builds.py`
+fails the suite if one does not.
+
+Without it, two overlapping builds race on the tree and it fails in two ways at
+once. The loud one is the loser's fetch:
+
+```
+error: cannot lock ref 'refs/remotes/origin/main': is at 2e98e919 but expected 3212b14a
+ ! 3212b14a..2e98e919  main -> origin/main  (unable to update local ref)
+```
+
+That reads like a corrupt repo and is not. It says the winner already applied
+the update the loser was about to make. New branches in the same fetch still
+succeed, because git skips the old-value check when it creates a
+remote-tracking ref, so only pre-existing refs fail. Nothing is wedged and the
+next build goes green on its own; **there is nothing to clean up on the host,
+and `git pack-refs` / `git update-ref -d` will not help.**
+
+The quiet failure is the one that matters. On 2026-08-18 `MCDServices-Main` #562
+logged `Synced /var/opt/mechacorpsgames to 2e98e919`, which was #563's commit
+and not its own, then deployed the wiki out of that tree and reported SUCCESS.
+Pinning the tree to the branch being deployed is the whole point of the stage,
+and an unserialized job cannot keep that promise.
+
+**Do not fix the fetch error by retrying it.** A retry lets the losing build win
+the second time and reset the tree while the other build is still reading it,
+converting a red build into a silently wrong deploy.
+
+Serialization is per-job, so it only covers trees that a single job owns. It
+does **not** cover a second job reading the same tree: `mcdPromotePipeline`
+builds the prod proxy image out of `/var/opt/mechacorpsgames/Src`, the same tree
+`mcdServicesPipeline` resets. Closing that needs a cross-job `lock(resource:)`.
+
 ## GitHub Webhook Configuration
 
 After creating the Jenkins jobs, configure GitHub webhooks:
