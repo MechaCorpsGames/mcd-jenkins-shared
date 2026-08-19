@@ -510,26 +510,54 @@ EOF
                             # binary's build id registered in Sentry -- so it, not the uploader's
                             # exit code, decides the stage. Failures are still reported, never
                             # swallowed: a failed verification marks the build UNSTABLE below.
-                            set +e
-                            sentry-cli --url https://us.sentry.io debug-files upload \
-                                --org mechacorps-llc --project mcd-server \
-                                --include-sources --wait \
-                                \$SYMBOL_PATHS
-                            UPLOAD_STATUS=\$?
-                            set -e
-                            if [ "\$UPLOAD_STATUS" -ne 0 ]; then
-                                echo "sentry-cli exited \$UPLOAD_STATUS. Verifying what actually reached Sentry rather than assuming nothing did."
-                            fi
+                            # Sentry can also fail to PROCESS a file it already accepted, and that
+                            # failure is transient. MCDServer-Main #873 got "An unknown error occurred"
+                            # on the shipped binary; #875, #876, #877 and #880 uploaded the same
+                            # artifact cleanly with no pipeline change in between. A single-shot upload
+                            # turns that hiccup into a permanent hole, because nothing ever re-uploads
+                            # symbols for a version that has already deployed -- a native crash in
+                            # v0.2.873 will symbolicate to nothing for as long as that build exists.
+                            # So retry the pair, and let the verifier say when to stop.
+                            SYMBOL_UPLOAD_ATTEMPTS=3
+                            SYMBOL_RETRY_DELAY=30
+                            SYMBOL_ATTEMPT=1
+                            while : ; do
+                                set +e
+                                sentry-cli --url https://us.sentry.io debug-files upload \
+                                    --org mechacorps-llc --project mcd-server \
+                                    --include-sources --wait \
+                                    \$SYMBOL_PATHS
+                                UPLOAD_STATUS=\$?
+                                set -e
+                                if [ "\$UPLOAD_STATUS" -ne 0 ]; then
+                                    echo "sentry-cli exited \$UPLOAD_STATUS on attempt \$SYMBOL_ATTEMPT of \$SYMBOL_UPLOAD_ATTEMPTS. Verifying what actually reached Sentry rather than assuming nothing did."
+                                fi
 
-                            if [ ! -f scripts/verify_sentry_symbols.py ]; then
-                                echo "Cannot verify the upload: scripts/verify_sentry_symbols.py is not on this branch. Merge MCDClient main into this branch."
-                                exit 1
-                            fi
-                            echo "Verifying the deployed binary is registered in Sentry..."
-                            python3 scripts/verify_sentry_symbols.py \
-                                --org mechacorps-llc --project mcd-server \
-                                --url https://us.sentry.io \
-                                bin/versions/${SERVER_VERSION_PATH}
+                                if [ ! -f scripts/verify_sentry_symbols.py ]; then
+                                    echo "Cannot verify the upload: scripts/verify_sentry_symbols.py is not on this branch. Merge MCDClient main into this branch."
+                                    exit 1
+                                fi
+                                echo "Verifying the deployed binary is registered in Sentry..."
+                                # The verifier, not sentry-cli's exit code, is the loop's condition. It is
+                                # the only thing here that asks whether THIS binary can symbolicate.
+                                set +e
+                                python3 scripts/verify_sentry_symbols.py \
+                                    --org mechacorps-llc --project mcd-server \
+                                    --url https://us.sentry.io \
+                                    bin/versions/${SERVER_VERSION_PATH}
+                                VERIFY_STATUS=\$?
+                                set -e
+                                if [ "\$VERIFY_STATUS" -eq 0 ]; then
+                                    break
+                                fi
+                                if [ "\$SYMBOL_ATTEMPT" -ge "\$SYMBOL_UPLOAD_ATTEMPTS" ]; then
+                                    echo "Symbols are still not in Sentry after \$SYMBOL_UPLOAD_ATTEMPTS attempts, so this is not a transient processing error."
+                                    exit \$VERIFY_STATUS
+                                fi
+                                echo "Attempt \$SYMBOL_ATTEMPT of \$SYMBOL_UPLOAD_ATTEMPTS did not put the build id in Sentry. Retrying in \$SYMBOL_RETRY_DELAY seconds."
+                                sleep \$SYMBOL_RETRY_DELAY
+                                SYMBOL_ATTEMPT=\$((SYMBOL_ATTEMPT + 1))
+                            done
                         """)
                         env.SYMBOLS_UPLOADED = status == 0 ? 'true' : 'false'
                         if (status != 0) {

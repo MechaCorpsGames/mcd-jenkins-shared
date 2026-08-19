@@ -278,3 +278,109 @@ def test_verification_runs_even_when_the_upload_reports_failure(path: Path) -> N
     assert upload_at < verify_at, (
         f"{path.name} verification must follow the upload, not precede it."
     )
+
+
+# ---------------------------------------------------------------------------
+# A transient Sentry processing failure must not orphan a build forever (mc-lg8x)
+# ---------------------------------------------------------------------------
+
+
+def _retry_loop_body(stage_body: str, path: Path) -> str:
+    """Return the text between `while : ; do` and its matching `done`.
+
+    The stage also contains a `for d in ...; do ... done` that builds
+    SYMBOL_PATHS, and it sits above the retry loop, so scanning forward from
+    the `while` for the first `done` line does not pick it up.
+
+    Groovy's `\\$` escape is decoded to a plain `$` on the way out. The shell
+    body is a GString, so every shell variable is spelled `\\$NAME` in the
+    source; asserting on the escaped form would pin the quoting style rather
+    than the behaviour, and would silently stop matching if the stage were
+    ever moved into a single-quoted heredoc.
+    """
+    start = stage_body.find("while : ; do")
+    assert start != -1, (
+        f"{path.name} Upload Debug Symbols has no `while : ; do` retry loop. "
+        "See mc-lg8x."
+    )
+    lines = stage_body[start:].splitlines()
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "done":
+            return "\n".join(lines[:index]).replace("\\$", "$")
+    pytest.fail(f"{path.name} retry loop is never closed by `done`. See mc-lg8x.")
+
+
+@pytest.mark.parametrize("path", _UPLOAD_PIPELINES, ids=lambda p: p.name)
+def test_a_failed_verification_retries_the_upload(path: Path) -> None:
+    """Sentry can reject a file it accepted, and it recovers on its own.
+
+    MCDServer-Main #873 uploaded the shipped binary and Sentry answered "An
+    unknown error occurred" twice, leaving the build id unregistered. #875,
+    #876, #877 and #880 uploaded the same artifact cleanly with no pipeline
+    change in between, so the failure was transient on Sentry's side.
+
+    A single-shot upload turns that hiccup into a permanent hole: nothing ever
+    re-uploads symbols for a version that already deployed, so v0.2.873's
+    native crashes symbolicate to nothing for as long as that build exists.
+    The retry has to re-run the UPLOAD, not just re-ask the verifier, because
+    the file is what failed to process.
+    """
+    body = _stage_body(_src(path), "Upload Debug Symbols")
+    loop = _retry_loop_body(body, path)
+    assert "debug-files upload" in loop, (
+        f"{path.name} retries around the verifier but leaves the upload "
+        "outside the loop. Re-asking Sentry about a file it failed to process "
+        "never changes the answer. See mc-lg8x."
+    )
+    assert "verify_sentry_symbols.py" in loop, (
+        f"{path.name} retry loop does not re-verify, so it cannot tell whether "
+        "the retry worked. See mc-lg8x."
+    )
+
+
+@pytest.mark.parametrize("path", _UPLOAD_PIPELINES, ids=lambda p: p.name)
+def test_the_verifier_is_what_ends_the_retry_loop(path: Path) -> None:
+    """sentry-cli's exit code must not decide when to stop (mc-lg8x).
+
+    sentry-cli exits non-zero when ANY file fails, including files we do not
+    ship, and it exits zero for an upload whose processing later failed. Only
+    verify_sentry_symbols.py asks whether THIS binary's build id is in Sentry,
+    so only it can say the loop is done.
+    """
+    loop = _retry_loop_body(_stage_body(_src(path), "Upload Debug Symbols"), path)
+    assert "VERIFY_STATUS" in loop, (
+        f"{path.name} retry loop does not capture the verifier's exit status. "
+        "See mc-lg8x."
+    )
+    break_at = loop.find("break")
+    assert break_at != -1, f"{path.name} retry loop never breaks. See mc-lg8x."
+    condition = loop[:break_at]
+    assert re.search(r'\[ "?\$VERIFY_STATUS"? -eq 0 \]', condition), (
+        f"{path.name} must leave the retry loop on the verifier's result, not "
+        "on the uploader's exit code. See mc-lg8x."
+    )
+
+
+@pytest.mark.parametrize("path", _UPLOAD_PIPELINES, ids=lambda p: p.name)
+def test_the_retry_is_bounded_and_still_fails_the_stage(path: Path) -> None:
+    """A retry that never gives up hangs the build instead of reporting (mc-lg8x).
+
+    A genuinely broken upload -- a revoked token, a binary Sentry will never
+    accept -- has to end as UNSTABLE, which means the shell block has to exit
+    non-zero once the attempts are spent. Retrying forever would trade a
+    visible failure for a hung executor, and this library is shared by every
+    job on the controller.
+    """
+    loop = _retry_loop_body(_stage_body(_src(path), "Upload Debug Symbols"), path)
+    assert "SYMBOL_UPLOAD_ATTEMPTS" in loop, (
+        f"{path.name} retry loop has no attempt ceiling. See mc-lg8x."
+    )
+    assert re.search(r'-ge "?\$SYMBOL_UPLOAD_ATTEMPTS"?', loop), (
+        f"{path.name} retry loop never compares the attempt against the "
+        "ceiling, so it cannot stop. See mc-lg8x."
+    )
+    assert re.search(r"exit \$VERIFY_STATUS", loop), (
+        f"{path.name} must exit non-zero when the attempts are spent, so the "
+        "stage still marks the build UNSTABLE. Falling out of the loop quietly "
+        "is the mc-lxj5 swallow in a new shape. See mc-lg8x."
+    )
