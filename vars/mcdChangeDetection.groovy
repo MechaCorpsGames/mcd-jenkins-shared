@@ -135,7 +135,14 @@ def detect(String baseRef) {
             case 'docker-smoke':
                 // Orchestrator + compose stack + tests/e2e smoke fixtures —
                 // mcdAppServicesPipeline's "Docker Smoke" stage gates on this.
+                //
+                // The break below is load-bearing: without it Groovy falls
+                // through into 'mcp-game-server' and every compose or
+                // orchestrator file also sets mcpGameServerChanged, running the
+                // MCP Game Server Go suite on PRs that touch no Go at all
+                // (mc-lvzi).
                 dockerSmokeChanged = true
+                break
             case 'mcp-game-server':
                 mcpGameServerChanged = true
                 break
@@ -144,6 +151,17 @@ def detect(String baseRef) {
                 break
             case 'monitoring':
                 monitoringChanged = true
+                break
+            case 'build-system':
+                // The root Makefile drives both halves of the build: 'server',
+                // 'proxy' and 'testclient' on one side, 'ext', 'test-gdscript'
+                // and 'export-done' on the other, and the pipelines invoke those
+                // targets directly. A path cannot tell us which half changed, so
+                // this fans out to both. That is the same outcome the
+                // unmatched-file fallback produced, but as a decision rather
+                // than an accident (mc-lvzi).
+                serverChanged = true
+                clientChanged = true
                 break
             case 'docs':
                 break
@@ -193,6 +211,7 @@ def detect(String baseRef) {
  * @return 'server', 'client', 'shared', 'services-shared', 'auth',
  *         'account-service', 'auction-house', 'crash-reporting',
  *         'docker-smoke', 'discord-bot', 'mcp-game-server',
+ *         'build-system',
  *         'wiki', 'monitoring', 'docs', or 'unknown'
  */
 def categorize(String filePath) {
@@ -296,6 +315,12 @@ def categorize(String filePath) {
     // MCP Game Server (Claude-as-Player MCP harness; Go module — see ADR mc-4bi.1).
     // Local dev tool, not deployed; tests run in the server pipeline.
     if (filePath.startsWith('Src/MCPGameServer/')) return 'mcp-game-server'
+
+    // Root build system. Without this the Makefile matches no rule, lands in
+    // unmatchedFiles and reaches the same both-builds outcome through the
+    // fallback. The fallback also logs it as "unmatched", which hides that this
+    // is the intended classification for a file we know about (mc-lvzi).
+    if (filePath == 'Makefile') return 'build-system'
 
     // Documentation / tooling paths (no build needed)
     def docPrefixes = [
