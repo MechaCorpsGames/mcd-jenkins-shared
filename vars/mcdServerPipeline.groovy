@@ -419,7 +419,15 @@ def call(Map config) {
                 }
                 steps {
                     sh '''#!/bin/bash
-                        set -o pipefail
+                        # -e is not optional here. A Jenkins sh step takes the
+                        # exit status of the LAST command in the body, and this
+                        # body has a shebang, so Jenkins runs it directly rather
+                        # than through its default 'sh -xe'. Without -e the unit
+                        # run below could fail and the stage still reported
+                        # SUCCESS, because the integration run after it exited 0.
+                        # That is how the protocol drift guard ran on every PR
+                        # and had its verdict discarded (mc-91jj).
+                        set -euo pipefail
                         mkdir -p reports/mcp-game-server
                         cd Src/MCPGameServer
                         go test -v ./... 2>&1 | tee ../../reports/mcp-game-server/unit.log
