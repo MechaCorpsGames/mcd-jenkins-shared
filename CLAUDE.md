@@ -261,13 +261,20 @@ Your work goes through the merge queue:
 2. `gt done` pushes your branch and submits an MR to the merge queue
 3. Refinery merges to main after Witness verification
 
-**Do NOT create GitHub PRs either.** The merge queue handles everything.
+**GitHub PRs are fine.** Opening a PR against `main` is an accepted way to land
+work in this repo. Use it when you are working outside the merge queue, which
+includes any agent whose dispatch asks for a PR. What stays true either way is
+the heading above: do not push directly to `main`.
 
 ### The Landing Rule
 
-> **Work is NOT landed until it's in the Refinery MQ.**
+> **Work is NOT landed until it is merged to `main`.**
+
+Either route gets it there:
 
 **Local branch → `gt done` → MR in queue → Refinery merges → LANDED**
+
+**Local branch → push → GitHub PR → reviewer merges → LANDED**
 
 ---
 
