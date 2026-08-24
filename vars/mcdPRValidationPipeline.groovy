@@ -818,11 +818,30 @@ def call(Map config) {
                         # SUCCESS, because the integration run after it exited 0.
                         # That is how the protocol drift guard ran on every PR
                         # and had its verdict discarded (mc-91jj).
+                        #
+                        # -timeout is not optional either, and 4m is
+                        # deliberately far under Go's 10m default. `go test
+                        # ./...` buffers each package's output until that
+                        # package finishes, so a hung test prints NOTHING.
+                        # The stage simply goes quiet, Jenkins' durable-task
+                        # wrapper eventually reports JENKINS-48300 ("wrapper
+                        # script does not seem to be touching the log file"),
+                        # and the build dies without ever naming the test that
+                        # hung. Go's own timeout panics with a full goroutine
+                        # dump identifying the stuck goroutine, so it has to
+                        # fire FIRST: before the durable-task heartbeat window
+                        # and before the 10m default. mc-11nh: MCD-PR-Main
+                        # #1616, #1617, #1619, #1620, #1621 and #1622 each
+                        # burned roughly 10 minutes on that silence and every
+                        # one of them reported the JENKINS-48300 red herring
+                        # instead of a test name. A healthy run of this stage
+                        # takes about 53s (build #1633), so 4m is over 4x
+                        # headroom.
                         set -euo pipefail
                         mkdir -p reports/mcp-game-server
                         cd Src/MCPGameServer
-                        go test -v ./... 2>&1 | tee ../../reports/mcp-game-server/unit.log
-                        go test -v -tags=integration ./integration_test/... 2>&1 | tee ../../reports/mcp-game-server/integration.log
+                        go test -v -timeout 4m ./... 2>&1 | tee ../../reports/mcp-game-server/unit.log
+                        go test -v -timeout 4m -tags=integration ./integration_test/... 2>&1 | tee ../../reports/mcp-game-server/integration.log
                     '''
                 }
                 post {
