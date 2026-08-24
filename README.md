@@ -228,6 +228,44 @@ does **not** cover a second job reading the same tree: `mcdPromotePipeline`
 builds the prod proxy image out of `/var/opt/mechacorpsgames/Src`, the same tree
 `mcdServicesPipeline` resets. Closing that needs a cross-job `lock(resource:)`.
 
+## Steam uploads: one per branch, fired last
+
+Every client pipeline that arms `config.steamBranch` fires `MCDSteam-Upload`
+from its **last** stage. Two rules keep that from flooding the controller.
+
+**The trigger stays the last stage.** It used to sit ahead of
+`Upload Debug Symbols`, so a client build handed the controller a second job to
+run while it still had minutes of its own work left. With four executors and no
+agents that upload competes for an executor with the PR validation somebody is
+waiting on. `wait: false` and `propagate: false` are deliberate and must stay:
+the client build must not block on the upload, and a Steam hiccup must not red
+an otherwise good build.
+
+**Redundant uploads coalesce, newest wins.** On 2026-08-23, `MCDSteam-Upload`
+#593 through #597 all ran from `MCDClient-Main` with `STEAM_BRANCH=main` inside
+two hours. They all set a build live on the same beta, so only the last had any
+effect. `mcdSteamUploadPipeline` now skips an upload whose `SOURCE_BUILD` is
+older than the newest archived build of the same source job, because that newer
+build fires its own upload to the same Steam branch. A superseded build is
+`NOT_BUILT` and notifies nobody: being superseded is the mechanism working.
+Manually triggered uploads are never superseded, so a hand re-upload of a
+known-good artifact still runs.
+
+**Do not reach for `milestone()` or `disableConcurrentBuilds()` here.**
+`MCDSteam-Upload` is one job serving four Steam branches. Both are job-scoped
+and ordered by build number, with no notion of `STEAM_BRANCH`, so a `main`
+upload would abort a queued `backend` upload that nothing superseded. A `lock()`
+in this pipeline must be keyed on the branch or the source job, never on a
+constant. `test/unit/test_steam_upload_coalescing.py` fails the suite if any of
+that changes, and
+`docs/adr/2026-08-23-steam-uploads-coalesce-on-artifact-freshness.md` carries
+the reasoning.
+
+Note the contrast with the deploy trees above: `Sync Src Tree` **requires**
+`disableConcurrentBuilds()` because one job owns one mutable directory. The
+Steam job is the opposite shape, one job owning four independent destinations,
+and the same guard would be a bug.
+
 ## GitHub Webhook Configuration
 
 After creating the Jenkins jobs, configure GitHub webhooks:

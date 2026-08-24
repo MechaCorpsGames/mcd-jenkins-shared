@@ -1,6 +1,11 @@
 // MechaCorps Steam Upload Pipeline - Shared Library
 // Standalone job: reads artifacts from a client build and uploads to Steam via SteamPipe.
-// Triggered manually — pick the source job and build number.
+//
+// Triggered two ways: manually (pick the source job and build number), and
+// automatically by the last stage of every client pipeline that arms
+// config.steamBranch. Automatic triggers coalesce (see 'Coalesce by Source
+// Build' below and mcdSteamSourceBuild.groovy). Manual triggers never do: a
+// build number somebody typed is a build number they meant.
 
 def call(Map config) {
     // Required config:
@@ -43,7 +48,51 @@ def call(Map config) {
         }
 
         stages {
+            // One upload per Steam branch, newest wins (bead mc-fr2h).
+            //
+            // The client pipeline fires an upload per build, so a burst of
+            // client builds queues a burst of uploads that all set a build live
+            // on the SAME beta. Only the last one has any effect, and the
+            // rest sit in the queue competing for executors with PR validation.
+            //
+            // An upload is pointless once a NEWER build of the same source job
+            // has archived artifacts, because that build fires its own upload
+            // to the same Steam branch. Detecting it that way keys the decision
+            // on the source job, which can never suppress a different Steam
+            // branch (a different branch is a different source job). See
+            // mcdSteamSourceBuild.groovy for why this is not milestone()+lock().
+            //
+            // NOT_BUILT, not FAILURE: being superseded is the system working.
+            // Declarative runs post{success} only on SUCCESS and post{failure}
+            // only on FAILURE, so a NOT_BUILT build notifies Discord about
+            // nothing, which is the intent. The notification handlers below
+            // also check explicitly, so a future post condition cannot page
+            // somebody for a normal outcome.
+            stage('Coalesce by Source Build') {
+                steps {
+                    script {
+                        env.UPLOAD_SUPERSEDED = 'false'
+
+                        String newer = mcdSteamSourceBuild.supersededBy(
+                            params.SOURCE_JOB, params.SOURCE_BUILD)
+                        if (!newer) {
+                            return
+                        }
+
+                        env.UPLOAD_SUPERSEDED = 'true'
+                        env.SUPERSEDED_BY = newer
+                        currentBuild.displayName =
+                            "#${BUILD_NUMBER} superseded by ${params.SOURCE_JOB} #${newer}"
+                        currentBuild.description =
+                            "Skipped: ${params.SOURCE_JOB} #${newer} has newer artifacts for Steam branch '${params.STEAM_BRANCH}'"
+                        currentBuild.result = 'NOT_BUILT'
+                        echo "Superseded: this upload carries ${params.SOURCE_JOB} #${params.SOURCE_BUILD}, but #${newer} has already archived artifacts and fires its own upload to Steam branch '${params.STEAM_BRANCH}'. Skipping."
+                    }
+                }
+            }
+
             stage('Locate Client Artifacts') {
+                when { expression { env.UPLOAD_SUPERSEDED != 'true' } }
                 steps {
                     script {
                         def jobDir = "/var/lib/jenkins/jobs/${params.SOURCE_JOB}/builds"
@@ -52,10 +101,7 @@ def call(Map config) {
                         // Resolve non-numeric values (empty, "lastSuccessfulBuild", etc.)
                         if (!buildNum || !buildNum.isNumber()) {
                             // Find latest build with archived artifacts
-                            buildNum = sh(
-                                script: "ls -1d ${jobDir}/*/archive 2>/dev/null | sort -t/ -k8 -n | tail -1 | grep -oP '\\d+(?=/archive)'",
-                                returnStdout: true
-                            ).trim()
+                            buildNum = mcdSteamSourceBuild.latest(params.SOURCE_JOB)
 
                             if (!buildNum) {
                                 error "No builds with artifacts found for ${params.SOURCE_JOB}"
@@ -107,6 +153,7 @@ def call(Map config) {
             }
 
             stage('Prepare Steam Content') {
+                when { expression { env.UPLOAD_SUPERSEDED != 'true' } }
                 steps {
                     checkout scm
 
@@ -171,7 +218,40 @@ def call(Map config) {
                 }
             }
 
+            // Checked again immediately before the only effectful step in this
+            // job. Locating and unpacking the artifacts takes minutes, and a
+            // client build can archive newer ones during them. Without this
+            // the two would both reach steamcmd and race over which one ends up
+            // live on the beta. The window is not closed completely: an upload
+            // that passes this check microseconds before a newer build archives
+            // still runs. That leaves one redundant upload, and the newer one
+            // sets itself live afterwards, so the beta still ends on the newest
+            // build. Closing it entirely needs mutual exclusion between
+            // concurrent uploads, which is bead mc-v721, not this.
+            stage('Re-check for Newer Artifacts') {
+                when { expression { env.UPLOAD_SUPERSEDED != 'true' } }
+                steps {
+                    script {
+                        String newer = mcdSteamSourceBuild.supersededBy(
+                            params.SOURCE_JOB, params.SOURCE_BUILD)
+                        if (!newer) {
+                            return
+                        }
+
+                        env.UPLOAD_SUPERSEDED = 'true'
+                        env.SUPERSEDED_BY = newer
+                        currentBuild.displayName =
+                            "#${BUILD_NUMBER} superseded by ${params.SOURCE_JOB} #${newer}"
+                        currentBuild.description =
+                            "Skipped before upload: ${params.SOURCE_JOB} #${newer} archived newer artifacts while this build was preparing content"
+                        currentBuild.result = 'NOT_BUILT'
+                        echo "Superseded during preparation: ${params.SOURCE_JOB} #${newer} archived newer artifacts. Not running steamcmd."
+                    }
+                }
+            }
+
             stage('Upload to Steam') {
+                when { expression { env.UPLOAD_SUPERSEDED != 'true' } }
                 steps {
                     retry(2) {
                         sh """
@@ -186,8 +266,17 @@ def call(Map config) {
         }
 
         post {
+            // Both handlers return early on a superseded build. Declarative
+            // already keeps them from running (NOT_BUILT is neither SUCCESS nor
+            // FAILURE), but "superseded" is a NORMAL outcome and must never
+            // reach Discord: a coalescing change that starts paging people
+            // about builds it deliberately skipped is worse than the five
+            // redundant uploads it replaced.
             success {
                 script {
+                    if (env.UPLOAD_SUPERSEDED == 'true') {
+                        return
+                    }
                     discordNotify.success(
                         title: "Steam Upload",
                         message: "✅ Uploaded to Steam",
@@ -202,6 +291,9 @@ def call(Map config) {
             }
             failure {
                 script {
+                    if (env.UPLOAD_SUPERSEDED == 'true') {
+                        return
+                    }
                     discordNotify.failure(
                         title: "Steam Upload",
                         message: "❌ Steam upload failed",
