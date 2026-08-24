@@ -419,26 +419,131 @@ def call(Map config) {
                 }
             }
 
+            // The stage that could not see a suite which never ran (mc-rqgm).
+            //
+            // gdUnit reports a suite that fails to PARSE as absent, not as
+            // failed. It contributes zero cases, the summary still reads
+            // "0 errors | 0 failures", both halves of "Executed test suites:
+            // (N/M)" are counted after the load so they still match, and the
+            // process still exits 0. On 2026-08-23 tests/test_hangar_view.gd
+            // was parse-broken on main from 06:21, and MCDClient PR #2627 ran
+            // a full client validation over it at 18:33 and passed in 6m56s.
+            //
+            // What does notice is the ERROR-class line the engine prints while
+            // loading the broken script. MCDClient's `make test-gdscript` has
+            // grepped for exactly that since #1527 (2026-05-16). This stage has
+            // never gone through that target, so the only guard that catches
+            // this class has been decorative on the only check that gates a
+            // merge, for three months.
+            //
+            // WHY THE GUARD IS PORTED HERE RATHER THAN BY CALLING THE TARGET.
+            // `make test-gdscript` does not pass `-c`, so it runs fail-fast:
+            // gdUnit stops at the first failing test. Handing this stage to it
+            // would cut the JUnit report published below down to whatever ran
+            // before the first failure, and would make the parse-break guard
+            // suite MCDClient #2642 just added (tests/test_suite_discovery_
+            // guard.gd) conditional on every suite scanned ahead of it passing.
+            // A gate that only runs while everything else is green is not a
+            // gate. The stage keeps `-c` and brings the guard to it.
+            //
+            // The knowledge is NOT duplicated. Which ERROR lines are
+            // test-intentional is decided by that branch's own
+            // tests/_log_filter.py and tests/_log_filter_patterns.txt, which
+            // this pipes through. Only the assertion "nothing of that class
+            // survived the filter" is stated here as well as in the Makefile.
             stage('GDScript Tests') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
                 steps {
-                    sh """
+                    sh '''#!/bin/bash
+                        # -e is not optional. This body has a shebang, so Jenkins
+                        # runs it directly instead of through its default
+                        # `sh -xe`, and the step's status would otherwise be the
+                        # LAST command's alone (mc-91jj). It also gives the guard
+                        # below the same precondition the Makefile gives it: it
+                        # is reached only on a run that exited clean. pipefail is
+                        # load-bearing for the same reason -- the run is a
+                        # pipeline now, and without it `tee` would report 0 for a
+                        # Godot process that died.
+                        set -euo pipefail
+
+                        # One name for the log, so the file `tee` writes and the
+                        # file the guard reads cannot drift apart. They must not:
+                        # `grep` on a path that does not exist exits 2, the `if`
+                        # below reads that as "no matches", and the guard would
+                        # pass silently on every build. `set -u` turns a typo
+                        # here into a loud failure instead.
+                        GDSCRIPT_LOG=build/godot-test-output.log
+
                         rm -rf reports/
+                        mkdir -p build
+
+                        # The filter is what makes the guard usable: tests emit
+                        # ERROR lines on purpose and mark them, and this drops
+                        # the marked pairs. Without it the guard would fire on
+                        # every run. It has shipped on every branch this library
+                        # serves (main and release, both verified 2026-08-23), so
+                        # its absence is a broken checkout, not a branch skew,
+                        # and it is said out loud rather than skipped past.
+                        if [ ! -f tests/_log_filter.py ]; then
+                            echo "tests/_log_filter.py is missing from this checkout."
+                            echo "The GDScript ERROR-line guard cannot run without it, and a suite that"
+                            echo "fails to parse is invisible without the guard (mc-rqgm), so this fails"
+                            echo "rather than running ungated."
+                            exit 1
+                        fi
+
                         echo "Importing Godot project resources..."
                         godot --headless --import 2>/dev/null || true
+
                         echo "Running GdUnit4 GDScript tests..."
-                        godot --headless -s addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests -c --ignoreHeadlessMode
-                    """
+                        # python3 -u: the filter sits between Godot and the
+                        # console, and a buffered filter would hold the whole
+                        # run's output back and make a working stage look hung.
+                        godot --headless -s addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests -c --ignoreHeadlessMode 2>&1 \
+                            | python3 -u tests/_log_filter.py \
+                            | tee "$GDSCRIPT_LOG"
+
+                        echo "Checking for ERROR-class lines that survived tests/_log_filter.py..."
+                        if grep -nE '^(ERROR|SCRIPT ERROR|USER ERROR): ' "$GDSCRIPT_LOG"; then
+                            echo ""
+                            echo "The lines above are ERROR-class Godot output that tests/_log_filter.py did"
+                            echo "not classify as expected. gdUnit's own scoreboard above is green, and this"
+                            echo "is the failure it cannot see: a suite that fails to parse contributes zero"
+                            echo "cases, so the summary reads 0 errors | 0 failures and the run exits 0 while"
+                            echo "the suite never executed (mc-rqgm)."
+                            echo ""
+                            echo "Fix the error. If the line is one a test emits on purpose, mark it with"
+                            echo "GdUnitErrorExpectation.expect_error, or add it to"
+                            echo "tests/_log_filter_patterns.txt with a comment saying why it is expected."
+                            echo "Do not widen the pattern to silence a real failure."
+                            exit 1
+                        fi
+                    '''
                 }
                 post {
                     always {
                         script {
                             try {
-                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'reports/**/results.xml'
+                                // allowEmptyResults stays FALSE (mc-rqgm). This
+                                // stage exists to stop "nothing ran" from
+                                // reading as success, and an empty result set is
+                                // that same claim in another form. The stage
+                                // always runs the whole tests/ tree, so a build
+                                // that reaches here with no results.xml has not
+                                // passed, it has failed to run. Measured on
+                                // MCD-PR-Main #1634 (2026-08-24): 7748 tests
+                                // published, so the pattern below does match on
+                                // a normal client build.
+                                junit allowEmptyResults: false, skipPublishingChecks: true, testResults: 'reports/**/results.xml'
                             } catch (NoSuchMethodError e) {
                                 echo "JUnit plugin not installed — skipping test report publishing"
                             }
                         }
+                    }
+                    failure {
+                        // The guard prints the offending lines, but the filtered
+                        // log is what tells you what ran before them.
+                        archiveArtifacts artifacts: 'build/godot-test-output.log', allowEmptyArchive: true, fingerprint: false
                     }
                 }
             }
