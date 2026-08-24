@@ -217,6 +217,57 @@ def call(Map config) {
                 }
             }
 
+            // Fail a PR whose bundled Linux native binaries need a versioned
+            // symbol the Steam Linux Runtime we publish against does not export.
+            //
+            // This is the static guard for mc-h53k (docs/adr/0138): libsentry
+            // declares a versioned CURL_OPENSSL_4 requirement, Steam's scout
+            // runtime pins a libcurl exporting only CURL_OPENSSL_3, the engine
+            // could not dlopen the Sentry GDExtension at all, and every Linux
+            // Steam playtest on the shipped build captured ZERO native crashes.
+            // Nothing failed loudly. The condition is invisible until a player
+            // crashes and no report ever arrives, which is why it needs a gate
+            // rather than a runbook.
+            //
+            // Deliberately NOT gated on CLIENT_CHANGED. Both inputs to the check
+            // are in the client bucket today -- mcdChangeDetection routes
+            // addons/ and scripts/ to 'client', and the scanned binaries live
+            // under addons/sentry/bin/linux and addons/godotsteam/linux{32,64}
+            // -- so a gate WOULD fire on a .so swap as things currently stand.
+            // It is left ungated anyway: the check reads committed ELF headers
+            // in pure Python with no deps and measured 0.06s by hand, so a gate
+            // buys nothing, while it would make this guard's firing depend on a
+            // second file continuing to route addons/ to 'client'. A control
+            // whose failure mode is silence should not be one edit in an
+            // unrelated file away from never running again. Same reasoning the
+            // 'ADR Identifier Gate' above records for its own scope.
+            //
+            // Runs here, before Setup Dependencies and every build, so it fails
+            // fast.
+            stage('Native Library ABI Check') {
+                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                steps {
+                    // Branch-skew guard, same shape as 'ADR Identifier Gate'
+                    // above and 'Script Tests' below, and not a failure swallow.
+                    // A target that is absent is skipped and said out loud; a
+                    // target that exists and fails still fails the build.
+                    //
+                    // Verified 2026-08-24: check-native-abi is already present on
+                    // all four MCDClient branches this library serves (main,
+                    // release, features/backend, features/card), so the probe is
+                    // a formality today. It is kept because the branch set is not
+                    // fixed and the cost of being wrong is a red PR on a branch
+                    // whose PR had nothing to do with this.
+                    sh '''
+                        if ! make -n check-native-abi >/dev/null 2>&1; then
+                            echo "ℹ No check-native-abi target on this branch, skipping. It arrives with the MCDClient change that adds scripts/check_native_lib_abi.py."
+                            exit 0
+                        fi
+                        make check-native-abi
+                    '''
+                }
+            }
+
             stage('Go Lint') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
