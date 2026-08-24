@@ -1064,10 +1064,50 @@ ENVEOF
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
-                        cd ${config.deployPath}/versions
-                        ls -dt v*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf || true
-                        cd ${config.deployPath}/testclient-versions
-                        ls -dt v*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf || true
+                        # RETENTION (mc-mhjd). Keeping the newest five was the whole
+                        # rule, and on its own it can delete a server binary out from
+                        # under a LIVE MATCH: the proxy routes old clients to old
+                        # versions (mc-cdjn), so a version past the newest five may
+                        # still be serving players. The keep-5 count stays as the
+                        # safety cap; the in-use lease below is the correctness fix.
+                        # A version is deleted only if it is BOTH beyond keep-5 AND
+                        # unleased.
+                        #
+                        # THE LEASE. This contract is shared verbatim with the proxy
+                        # (mc-epfh); both sides hardcode the same path:
+                        #   path       <version-dir>/.in-use
+                        #   created    by the proxy when a match starts on that version
+                        #   refreshed  touched at least every 5 minutes while any match
+                        #              on that version is still live
+                        #   removed    when the last match on that version ends
+                        #
+                        # It is a LEASE rather than a plain flag because a plain flag
+                        # is unsafe in both directions. A proxy that dies mid-match
+                        # would leave a flag behind that pins the version forever, and
+                        # versions only accumulate here, so the disk grows without
+                        # bound. An expiring lease reclaims that version on a later
+                        # run. The expiry is 12x the refresh interval, so a live match
+                        # would have to miss twelve consecutive touches to be treated
+                        # as dead.
+                        IN_USE_LEASE_MINUTES=60
+
+                        prune_versions() {
+                            target="\$1"
+                            [ -d "\$target" ] || return 0
+                            cd "\$target" || return 0
+                            for candidate in \$(ls -dt v*/ 2>/dev/null | tail -n +6); do
+                                version="\${candidate%/}"
+                                if [ -n "\$(find "\$version" -maxdepth 1 -name .in-use -mmin -"\${IN_USE_LEASE_MINUTES}" 2>/dev/null)" ]; then
+                                    echo "⏸ keeping \${version} (in-use lease held, a match is live on it)"
+                                    continue
+                                fi
+                                rm -rf "\$version"
+                                echo "🗑 removed \${version}"
+                            done
+                        }
+
+                        prune_versions "${config.deployPath}/versions" || true
+                        prune_versions "${config.deployPath}/testclient-versions" || true
                         echo "✓ Cleanup complete for ${config.environment}"
                     """
                 }
