@@ -22,7 +22,29 @@ def call(Map config) {
         }
 
         options {
-            buildDiscarder(logRotator(numToKeepStr: '10', artifactDaysToKeepStr: '7', artifactNumToKeepStr: '10'))
+            // numToKeepStr is a HARD ceiling on everything a build leaves behind:
+            // it discards the whole build record, console log and artifacts
+            // together. artifactDaysToKeepStr and artifactNumToKeepStr can only
+            // delete artifacts EARLIER from builds that still exist; neither can
+            // extend anything past numToKeepStr.
+            //
+            // At 10 it was far too short to diagnose an intermittent failure.
+            // Measured 2026-08-24: asking Jenkins for 25 builds returned 10, and
+            // those ten (#943 10:19Z through #952 15:54Z) spanned 5h35m. That is
+            // the real retention window, not the 7 days artifactDaysToKeepStr
+            // suggests at a glance. mc-n37x's own evidence, build #908, was a 404
+            // before anyone could read it, and the Integration Test capture added
+            // in PR 100 was archiving into that same 5-hour window.
+            //
+            // 60 covers roughly a week at the observed rate (~9 builds/day) and
+            // costs almost nothing, because what it preserves is the console log,
+            // which is where the integration stage prints its confirm/refute
+            // verdict. artifactNumToKeepStr stays at 10 deliberately: raising it
+            // multiplies this job's artifact footprint (MCDServer, MCDProxy,
+            // MCDTestClient plus debug symbols) on a shared agent, and the free
+            // disk on that agent could not be measured from here. That half is
+            // tracked separately rather than guessed at.
+            buildDiscarder(logRotator(numToKeepStr: '60', artifactDaysToKeepStr: '7', artifactNumToKeepStr: '10'))
         }
 
         environment {
@@ -460,10 +482,25 @@ def call(Map config) {
                             // mc-n37x is intermittent (~1 run in 3) and its
                             // evidence is the proxy's own account of why it
                             // closed a player connection, which sits far above
-                            // the tail. Retention here is the buildDiscarder's
-                            // artifactDaysToKeepStr of 7 days, so a failure
-                            // stays diagnosable for a week rather than being
-                            // gone by the time anyone looks.
+                            // the tail.
+                            //
+                            // HOW LONG THESE ACTUALLY SURVIVE, stated precisely,
+                            // because an earlier version of this comment claimed
+                            // artifactDaysToKeepStr gave them a week and that was
+                            // false. These artifacts live for the SHORTER of
+                            // artifactNumToKeepStr (10 builds) and
+                            // artifactDaysToKeepStr (7 days), and they are also
+                            // destroyed outright when numToKeepStr discards the
+                            // build record. At ~9 builds/day the binding limit is
+                            // the 10-build one, so full logs are readable for
+                            // roughly a day, NOT a week.
+                            //
+                            // What is readable for about a week is the CONSOLE
+                            // log, which numToKeepStr now keeps for 60 builds and
+                            // which carries the confirm/refute verdict printed by
+                            // the disconnect scan above. Read the verdict there
+                            // first; come here for the full logs only while the
+                            // failing build is still recent.
                             archiveArtifacts artifacts: 'integration-logs/*.log',
                                              allowEmptyArchive: true,
                                              fingerprint: false
