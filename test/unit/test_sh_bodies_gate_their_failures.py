@@ -177,8 +177,15 @@ def test_mcp_game_server_stage_gates_its_go_tests(filename: str) -> None:
     )
     # Both runs must still be present; the fix is about gating them, not
     # dropping one to make the stage honest.
-    assert "go test -v ./..." in body, (
-        f"{filename} lost the MCP unit test run. See mc-91jj."
+    #
+    # Matched by shape rather than by literal string: mc-11nh added
+    # `-timeout 4m` to both invocations, and pinning the exact command line
+    # would make this test fail on any future flag while the property it
+    # actually cares about (the unit run over ./... is still here) still
+    # holds. The pattern deliberately does not match the integration run,
+    # whose package path is ./integration_test/... rather than ./...
+    assert re.search(r"\bgo test\b.*\s-v\b.*\s\./\.\.\.(\s|$)", body), (
+        f"{filename} lost the MCP unit test run over ./... . See mc-91jj."
     )
     assert "-tags=integration" in body, (
         f"{filename} lost the MCP integration test run. See mc-91jj."
