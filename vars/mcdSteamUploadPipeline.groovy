@@ -15,7 +15,16 @@ def call(Map config) {
         agent {
             docker {
                 image 'mcd-build-agent:latest'
-                args '-v /var/lib/jenkins/.steam:/home/jenkins/Steam:rw -v /var/lib/jenkins/jobs:/var/lib/jenkins/jobs:ro --network host'
+                // /opt/mechacorps is mounted read-write so 'Publish Steam Signal' below can
+                // write the latest-client-on-Steam file the proxy reads (mc-fxt7).
+                // mcdServerPipeline already mounts the same path the same way, which is
+                // why a file on the deploy host was chosen over a new service or endpoint.
+                // The --group-add list is copied from mcdServerPipeline for the same reason:
+                // that job is the one that demonstrably writes into /opt/mechacorps today,
+                // so its supplementary groups are the known-good answer rather than a guess.
+                // If the write is still refused, 'Publish Steam Signal' marks the build
+                // UNSTABLE and names the cause; it never fails a successful upload.
+                args '-v /var/lib/jenkins/.steam:/home/jenkins/Steam:rw -v /var/lib/jenkins/jobs:/var/lib/jenkins/jobs:ro -v /opt/mechacorps:/opt/mechacorps --network host --group-add 111 --group-add 995 --group-add 1000'
             }
         }
 
@@ -132,6 +141,16 @@ def call(Map config) {
                         ).trim()
                         env.SOURCE_COMMIT = sh(
                             script: "grep -oP '\"commit\"\\s*:\\s*\"\\K[^\"]+' ${manifestPath}",
+                            returnStdout: true
+                        ).trim()
+
+                        // The protocol this client build speaks, for the signal stage below
+                        // (mc-fxt7). Already written into manifest.json by the client
+                        // pipeline's 'Generate Compatibility Manifest' stage, so nothing new
+                        // is computed here. Empty if an older source build predates that
+                        // stage; the signal stage refuses to write a signal it cannot fill in.
+                        env.CLIENT_PROTOCOL_VERSION = sh(
+                            script: "grep -oP '\"protocolVersion\"\\s*:\\s*\\K[0-9]+' ${manifestPath} || true",
                             returnStdout: true
                         ).trim()
 
@@ -263,6 +282,99 @@ def call(Map config) {
                     }
                 }
             }
+
+            // Records what is now downloadable from Steam, for the proxy to relay
+            // to connected clients (bead mc-fxt7, design mc-cdjn). Two values: the
+            // client build that just went up, and the protocol it speaks. The proxy
+            // passes them on; the client compares them against itself and decides
+            // whether to offer the player an update.
+            //
+            // WHY THIS STAGE AND NOT THE CLIENT PIPELINE. The obvious home looks
+            // like mcdClientPipeline's 'Publish to Steam' stage, but that stage only
+            // fires this job with wait:false and returns, so it never learns whether
+            // the upload worked. Writing the signal there would announce
+            // "downloadable now" the instant an upload STARTED, which is the one
+            // thing this signal must never do: a player told to restart for a build
+            // that is not there yet has no way to succeed.
+            //
+            // WHY AFTER 'Upload to Steam' AND NOT INSIDE IT. Declarative fails a
+            // stage whose sh step exits non-zero, and a failed stage stops the
+            // pipeline, so a stage placed after the upload runs only when steamcmd
+            // genuinely finished. That is structural rather than a convention
+            // someone has to keep: there is no edit to the stage above that lets a
+            // failed upload fall through into this one.
+            //
+            // THE OTHER THREE WAYS IT COULD STILL LIE, ALL GUARDED:
+            //   * a superseded build never ran steamcmd  -> UPLOAD_SUPERSEDED gate
+            //   * STEAM_BRANCH=default uploads WITHOUT set-live ("flip public
+            //     manually in Steamworks"), so nothing became downloadable
+            //                                            -> skipped by the same when{}
+            //   * an old source build has no protocolVersion in its manifest
+            //                                            -> refuse, never guess
+            stage('Publish Steam Signal') {
+                when {
+                    expression {
+                        env.UPLOAD_SUPERSEDED != 'true' && params.STEAM_BRANCH != 'default'
+                    }
+                }
+                steps {
+                    script {
+                        if (!env.CLIENT_PROTOCOL_VERSION) {
+                            // No invented default. This value drives the client's
+                            // hard-block decision, so "unknown" must stay unknown: the
+                            // proxy keeps serving the previous signal and no player is
+                            // told anything false.
+                            echo "No protocolVersion in the source manifest, so no Steam signal written. " +
+                                 "Source build ${env.SOURCE_BUILD_NUM} predates 'Generate Compatibility Manifest'."
+                            return
+                        }
+
+                        // Keyed by STEAM BRANCH, not by deploy path. A client built from
+                        // the release branch uploads to the Steam 'staging' beta while
+                        // pointing at production, so branch-to-environment is genuinely
+                        // ambiguous and is not guessed here. Each proxy is pointed at the
+                        // file for the branch its players are on, via --steam-signal-file.
+                        String signalDir  = '/opt/mechacorps/steam-signals'
+                        String signalPath = "${signalDir}/${params.STEAM_BRANCH}.json"
+
+                        // Written to a temp file and renamed so a reader polling this path
+                        // never sees a half-written signal: rename(2) inside one directory
+                        // is atomic. set -euo pipefail so a failed mkdir or write fails the
+                        // stage instead of leaving a stale signal in place unnoticed.
+                        // returnStatus, not a bare sh: the upload has ALREADY SUCCEEDED by
+                        // the time this runs, and a build that reports "Steam upload failed"
+                        // to Discord because a side-channel file could not be written would
+                        // send somebody chasing an outage that did not happen. A failed write
+                        // is real (players stop being nudged), so it goes to UNSTABLE with a
+                        // named cause rather than being swallowed.
+                        int status = sh(returnStatus: true, script: """
+                            set -euo pipefail
+                            mkdir -p ${signalDir}
+                            cat > ${signalPath}.tmp << EOF
+{
+    "clientVersion": "${env.CLIENT_VERSION}",
+    "protocolVersion": ${env.CLIENT_PROTOCOL_VERSION},
+    "steamBranch": "${params.STEAM_BRANCH}",
+    "sourceJob": "${params.SOURCE_JOB}",
+    "sourceBuild": "${env.SOURCE_BUILD_NUM}",
+    "uploadedAt": "\$(date -Iseconds)"
+}
+EOF
+                            mv ${signalPath}.tmp ${signalPath}
+                            echo "Wrote ${signalPath}:"
+                            cat ${signalPath}
+                        """)
+
+                        if (status != 0) {
+                            echo "Could not write ${signalPath} (exit ${status}). The upload itself succeeded; " +
+                                 "connected clients will keep seeing the PREVIOUS signal until this is fixed."
+                            mcdUnstableReason("the latest-client-on-Steam signal was not written (exit ${status}). " +
+                                              "players will not be told this build is available")
+                            currentBuild.result = 'UNSTABLE'
+                        }
+                    }
+                }
+            }
         }
 
         post {
@@ -289,6 +401,35 @@ def call(Map config) {
                     )
                 }
             }
+
+            // Declarative runs post{success} only on SUCCESS, so without this an
+            // UNSTABLE build notifies nobody. 'Publish Steam Signal' is the only
+            // thing here that can go soft, and the whole point of that stage is that
+            // a client learns an update exists, so a silent warning would put us back
+            // where we were before the signal: players never told to update, and no
+            // one aware of it. Same shape as mcdClientPipeline's unstable handler,
+            // including reading env.UNSTABLE_REASON rather than a build phase.
+            unstable {
+                script {
+                    if (env.UPLOAD_SUPERSEDED == 'true') {
+                        return
+                    }
+                    def reason = env.UNSTABLE_REASON?.trim()
+                    def detail = reason
+                        ? "⚠️ Uploaded to Steam, but ${reason}"
+                        : "⚠️ Uploaded to Steam with warnings, see the console log"
+                    discordNotify.unstable(
+                        title: "Steam Upload",
+                        message: detail,
+                        reason: reason,
+                        jenkinsUrl: env.JENKINS_URL_BASE,
+                        jobName: config.jobName,
+                        environment: params.STEAM_BRANCH,
+                        branch: env.SOURCE_BRANCH ?: 'unknown'
+                    )
+                }
+            }
+
             failure {
                 script {
                     if (env.UPLOAD_SUPERSEDED == 'true') {
