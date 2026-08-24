@@ -89,10 +89,16 @@ def call(Map config) {
             stage('Setup Build Info') {
                 steps {
                     script {
-                        env.SERVER_VERSION = "0.1.${BUILD_NUMBER}"
-
+                        // SERVER_VERSION is derived from Src/GameServer/CMakeLists.txt
+                        // in the Checkout stage — the repo is not on disk yet here, so
+                        // the display name starts without a version and gains it there.
+                        // This pipeline stamped a private "0.1.${BUILD_NUMBER}" from
+                        // its initial commit while CMake shipped 1.0.x and then 0.2.x:
+                        // every displayName, manifest serverVersion and Discord line
+                        // disagreed with the binary and its deploy path (mc-glpn,
+                        // found via mc-bs84's v0.2.873).
                         def shortSha = env.commit_sha ? env.commit_sha.take(7) : 'manual'
-                        currentBuild.displayName = "#${BUILD_NUMBER} v${env.SERVER_VERSION} (${shortSha})"
+                        currentBuild.displayName = "#${BUILD_NUMBER} (${shortSha})"
 
                         def commitMsg = env.commit_message ? env.commit_message.split('\n')[0].take(60) : 'Manual build'
 
@@ -121,7 +127,6 @@ def call(Map config) {
                         env.GO_VERSION = sh(script: 'go version | cut -d" " -f3', returnStdout: true).trim()
 
                         echo "Branch: ${config.branch}"
-                        echo "Server Version: ${env.SERVER_VERSION}"
                         echo "Environment: ${config.environment}"
                         echo "Deploy path: ${config.deployPath}"
                         echo "Ports: TCP=${config.tcpPort}, WS=${config.wsPort}"
@@ -132,6 +137,26 @@ def call(Map config) {
             stage('Checkout') {
                 steps {
                     checkout scm
+                    script {
+                        // THE VERSION HAS ONE SOURCE OF TRUTH (mc-glpn).
+                        // Src/GameServer/CMakeLists.txt says "Developers control
+                        // MAJOR.MINOR, CI/CD controls BUILD" — so MAJOR.MINOR are read
+                        // from it and only BUILD_NUMBER belongs to CI. A parse failure
+                        // refuses to stamp a made-up version instead of defaulting:
+                        // a silent fallback is the two-sources bug with extra steps.
+                        // grep|head|tr runs without pipefail on purpose — a missing
+                        // line yields empty output here and the error() below, not an
+                        // opaque nonzero sh exit.
+                        def major = sh(script: 'grep "^set(VERSION_MAJOR " Src/GameServer/CMakeLists.txt | head -1 | tr -dc "0-9"', returnStdout: true).trim()
+                        def minor = sh(script: 'grep "^set(VERSION_MINOR " Src/GameServer/CMakeLists.txt | head -1 | tr -dc "0-9"', returnStdout: true).trim()
+                        if (!(major ==~ /\d+/) || !(minor ==~ /\d+/)) {
+                            error("mc-glpn: could not derive VERSION_MAJOR/VERSION_MINOR from Src/GameServer/CMakeLists.txt (got '${major}' / '${minor}') — refusing to stamp a made-up version")
+                        }
+                        env.SERVER_VERSION = "${major}.${minor}.${BUILD_NUMBER}"
+                        def shortSha = env.commit_sha ? env.commit_sha.take(7) : 'manual'
+                        currentBuild.displayName = "#${BUILD_NUMBER} v${env.SERVER_VERSION} (${shortSha})"
+                        echo "Server Version: ${env.SERVER_VERSION} (MAJOR.MINOR from Src/GameServer/CMakeLists.txt)"
+                    }
                 }
             }
 
@@ -253,6 +278,14 @@ def call(Map config) {
                     script {
                         env.SERVER_VERSION_PATH = readFile('bin/versions/latest.txt').trim()
                         env.TESTCLIENT_VERSION_PATH = readFile('bin/testclient-versions/latest.txt').trim()
+                        // CMake wrote latest.txt from its own PROJECT_VERSION; the
+                        // SERVER_VERSION derived at Checkout must be the same string
+                        // or the two version sources have split again — fail here,
+                        // loudly, not in a release-ordering query months later
+                        // (mc-glpn).
+                        if (env.SERVER_VERSION_PATH != "v${env.SERVER_VERSION}/MCDServer") {
+                            error("mc-glpn: version drift — CMake produced '${env.SERVER_VERSION_PATH}' but the pipeline derived 'v${env.SERVER_VERSION}/MCDServer'")
+                        }
                         sh "test -x 'bin/versions/${env.SERVER_VERSION_PATH}'"
                         sh "test -x 'bin/testclient-versions/${env.TESTCLIENT_VERSION_PATH}'"
                         sh "test -x 'bin/MCDProxy'"
