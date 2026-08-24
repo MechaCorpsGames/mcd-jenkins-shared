@@ -837,38 +837,6 @@ EOF
                 }
             }
 
-            // Auto-publish to Steam. Gated on config.steamBranch so this is a
-            // complete no-op on any pipeline that doesn't opt in — the branch
-            // Jenkinsfiles arm it (features/backend→backend, features/card→card,
-            // main→main, release→staging). We hand off to the standalone
-            // MCDSteam-Upload job (which runs in a container with steamcmd + the
-            // Steam content cache mounted and reads THIS build's just-archived
-            // artifacts by job+build number). Fire-and-forget: wait:false so the
-            // client build doesn't block on the upload, propagate:false so a
-            // Steam hiccup never reds an otherwise-good build — MCDSteam-Upload
-            // has its own Discord success/failure notifications. The upload job
-            // routes 'default' (public) to upload-only; all other branches are
-            // set live on their beta automatically.
-            stage('Publish to Steam') {
-                when {
-                    expression { env.CLIENT_CHANGED == 'true' && config.steamBranch }
-                }
-                steps {
-                    script {
-                        env.BUILD_PHASE = 'Publish to Steam'
-                        build job: 'MCDSteam-Upload',
-                            parameters: [
-                                string(name: 'SOURCE_JOB', value: config.jobName),
-                                string(name: 'SOURCE_BUILD', value: env.BUILD_NUMBER),
-                                string(name: 'STEAM_BRANCH', value: config.steamBranch)
-                            ],
-                            wait: false,
-                            propagate: false
-                        echo "Triggered MCDSteam-Upload: ${config.jobName} #${env.BUILD_NUMBER} -> Steam branch '${config.steamBranch}'"
-                    }
-                }
-            }
-
             // Without symbols every native crash in Sentry is 31 frames of
             // <unknown>, so a failure here is reported, never swallowed. The
             // stage marks the build UNSTABLE (the artifacts are still good) and
@@ -982,6 +950,55 @@ EOF
                         } else {
                             echo "✅ Debug symbols uploaded and verified against Sentry."
                         }
+                    }
+                }
+            }
+
+            // Auto-publish to Steam. Gated on config.steamBranch so this is a
+            // complete no-op on any pipeline that doesn't opt in — the branch
+            // Jenkinsfiles arm it (features/backend→backend, features/card→card,
+            // main→main, release→staging). We hand off to the standalone
+            // MCDSteam-Upload job (which runs in a container with steamcmd + the
+            // Steam content cache mounted and reads THIS build's just-archived
+            // artifacts by job+build number). Fire-and-forget: wait:false so the
+            // client build doesn't block on the upload, propagate:false so a
+            // Steam hiccup never reds an otherwise-good build — MCDSteam-Upload
+            // has its own Discord success/failure notifications. The upload job
+            // routes 'default' (public) to upload-only; all other branches are
+            // set live on their beta automatically.
+            //
+            // THIS STAGE MUST STAY LAST (bead mc-fr2h). It used to sit ahead of
+            // 'Upload Debug Symbols', so a client build handed the controller a
+            // second job to run while it still had minutes of its own work
+            // left. With four executors and no agents that upload competes for
+            // an executor with the PR validation somebody is waiting on. Firing
+            // it last costs nothing (wait:false means the client build does not
+            // block on it either way) and stops the two from overlapping.
+            //
+            // Keeping it last has a second effect worth knowing about: a build
+            // that dies before this stage now publishes nothing, where before it
+            // could publish and then fail. An UNSTABLE build still publishes,
+            // because declarative only skips later stages on FAILURE, and
+            // 'Upload Debug Symbols' reports a bad upload by marking the build
+            // UNSTABLE rather than failing it.
+            //
+            // test/unit/test_steam_upload_coalescing.py fails if it moves.
+            stage('Publish to Steam') {
+                when {
+                    expression { env.CLIENT_CHANGED == 'true' && config.steamBranch }
+                }
+                steps {
+                    script {
+                        env.BUILD_PHASE = 'Publish to Steam'
+                        build job: 'MCDSteam-Upload',
+                            parameters: [
+                                string(name: 'SOURCE_JOB', value: config.jobName),
+                                string(name: 'SOURCE_BUILD', value: env.BUILD_NUMBER),
+                                string(name: 'STEAM_BRANCH', value: config.steamBranch)
+                            ],
+                            wait: false,
+                            propagate: false
+                        echo "Triggered MCDSteam-Upload: ${config.jobName} #${env.BUILD_NUMBER} -> Steam branch '${config.steamBranch}'"
                     }
                 }
             }
