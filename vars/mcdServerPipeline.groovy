@@ -731,10 +731,19 @@ EOF
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
+                        // The proxy routes an old client to the server binary that
+                        // speaks its protocol, and learns which protocol a deployed
+                        // version speaks from the manifest this value feeds (mc-mhjd).
+                        // A wrong number here mis-routes every back-compat connection
+                        // silently, so read it strictly: the old `|| echo '1'` fallback
+                        // turned an unreadable header into a plausible-looking lie.
                         def protocolVersion = sh(
-                            script: "grep -oP 'PROTOCOL_VERSION\\s*=\\s*\\K[0-9]+' Src/Include/protocol_ext.h || echo '1'",
+                            script: "grep -oP 'PROTOCOL_VERSION\\s*=\\s*\\K[0-9]+' Src/Include/protocol_ext.h",
                             returnStdout: true
                         ).trim()
+                        if (!(protocolVersion ==~ /[0-9]+/)) {
+                            error("mc-mhjd: could not read PROTOCOL_VERSION from Src/Include/protocol_ext.h (got '${protocolVersion}'). Deploying this build would publish a protocol manifest the proxy cannot trust.")
+                        }
 
                         env.PROTOCOL_VERSION = protocolVersion
 
@@ -773,6 +782,27 @@ EOF
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
+                        # PROTOCOL MANIFEST (mc-mhjd). The proxy maps a deployed
+                        # version -> the protocol it speaks so it can route an old
+                        # client to a server that still understands it (mc-cdjn), and
+                        # it must do that WITHOUT executing the binary to ask. Write
+                        # the protocol next to the binary here in the workspace and
+                        # let the rsync below carry it across, so the manifest and the
+                        # binary can never be deployed apart.
+                        #
+                        # The version directory is read from latest.txt, the same
+                        # source 'Verify Build' pinned the binary path against, so
+                        # protocol.txt cannot land beside a different version than the
+                        # one being deployed. TestClient is built from this same tree
+                        # and therefore speaks this same protocol; the bots are
+                        # version-routed too (mc-cdjn Phase 2).
+                        [ -n "\${PROTOCOL_VERSION}" ] || { echo "mc-mhjd: PROTOCOL_VERSION is unset at deploy. 'Generate Server Manifest' must run first"; exit 1; }
+                        SERVER_VERSION_DIR="bin/versions/\$(dirname "\$(cat bin/versions/latest.txt)")"
+                        TESTCLIENT_VERSION_DIR="bin/testclient-versions/\$(dirname "\$(cat bin/testclient-versions/latest.txt)")"
+                        echo "\${PROTOCOL_VERSION}" > "\${SERVER_VERSION_DIR}/protocol.txt"
+                        echo "\${PROTOCOL_VERSION}" > "\${TESTCLIENT_VERSION_DIR}/protocol.txt"
+                        echo "✓ Protocol manifest: protocol \${PROTOCOL_VERSION} written to \${SERVER_VERSION_DIR}/protocol.txt and \${TESTCLIENT_VERSION_DIR}/protocol.txt"
+
                         mkdir -p ${config.deployPath}/versions ${config.deployPath}/testclient-versions ${config.deployPath}/Data/GameData
                         rsync -rlvz --no-group bin/versions/ ${config.deployPath}/versions/
                         rsync -rlvz --no-group bin/testclient-versions/ ${config.deployPath}/testclient-versions/
