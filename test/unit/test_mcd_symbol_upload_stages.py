@@ -53,8 +53,9 @@ def _stage_body(src: str, stage_name: str) -> str:
     """Return just the braces of a named stage.
 
     Brace-matched rather than "up to the next stage": Upload Debug Symbols is
-    the last stage in both pipelines, so a naive scan runs on into the post
-    blocks and picks up unrelated things like `du -h ... || echo 'N/A'`.
+    the last stage in mcdServerPipeline (and was in mcdClientPipeline until
+    mc-fr2h moved Publish to Steam after it), so a naive scan runs on into the
+    post blocks and picks up unrelated things like `du -h ... || echo 'N/A'`.
     """
     marker = f"stage('{stage_name}')"
     start = src.find(marker)
