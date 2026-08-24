@@ -364,23 +364,56 @@ def call(Map config) {
                             # Get TestClient path from latest.txt
                             TESTCLIENT_PATH="bin/testclient-versions/$(cat bin/testclient-versions/latest.txt)"
 
+                            # Logs live in the WORKSPACE, not /tmp, so the whole
+                            # file can be archived as a build artifact. The 20-line
+                            # tails below stay for quick console reading, but they
+                            # are not enough to diagnose the intermittent timeout
+                            # in mc-n37x: the proxy closes a player connection
+                            # WELL BEFORE the end of the run, so the evidence has
+                            # already scrolled out of a 20-line tail by the time
+                            # the clients hit their 180s cap.
+                            LOG_DIR=integration-logs
+                            rm -rf "$LOG_DIR"
+                            mkdir -p "$LOG_DIR"
+
                             cleanup() {
                                 echo ""
                                 echo "=== Proxy Log (last 20 lines) ==="
-                                tail -20 /tmp/test_proxy_${BUILD_NUMBER}.log 2>/dev/null || echo "(no proxy log)"
+                                tail -20 "$LOG_DIR/proxy.log" 2>/dev/null || echo "(no proxy log)"
                                 echo ""
                                 echo "=== Client 1 Log (last 15 lines) ==="
-                                tail -15 /tmp/test_client1_${BUILD_NUMBER}.log 2>/dev/null || echo "(no client1 log)"
+                                tail -15 "$LOG_DIR/client1.log" 2>/dev/null || echo "(no client1 log)"
                                 echo ""
                                 echo "=== Client 2 Log (last 15 lines) ==="
-                                tail -15 /tmp/test_client2_${BUILD_NUMBER}.log 2>/dev/null || echo "(no client2 log)"
+                                tail -15 "$LOG_DIR/client2.log" 2>/dev/null || echo "(no client2 log)"
+
+                                # mc-n37x signature scan. The suspected cause is
+                                # Player.sendToPlayer in Src/Proxy/main.go: when a
+                                # player's 128-deep send channel fills, the proxy
+                                # closes that player's connection outright, which
+                                # presents to the peer as Connection_PlayerDisconnected
+                                # mid-match and then nobody reconnects. A starved
+                                # client on a loaded shared agent is exactly how the
+                                # channel fills. This scan turns the next failure into
+                                # a confirmation or a refutation instead of a rerun.
+                                echo ""
+                                echo "=== Proxy disconnect scan (mc-n37x) ==="
+                                if grep -n "send channel full" "$LOG_DIR/proxy.log" 2>/dev/null; then
+                                    echo "^^ CONFIRMS the mc-n37x hypothesis: the proxy dropped a player"
+                                    echo "   because its send channel filled, not because the client left."
+                                else
+                                    echo "(no 'send channel full' warning: mc-n37x hypothesis NOT confirmed by this run)"
+                                fi
+                                echo "--- other disconnect/timeout lines ---"
+                                grep -niE "disconnect|reconnect|write error|timeout" "$LOG_DIR/proxy.log" 2>/dev/null | head -30 \
+                                    || echo "(none)"
 
                                 kill $PROXY_PID 2>/dev/null || true
                                 kill $CLIENT1_PID $CLIENT2_PID 2>/dev/null || true
                             }
                             trap cleanup EXIT
 
-                            ./bin/MCDProxy -port $TEST_TCP_PORT -wsport $TEST_WS_PORT > /tmp/test_proxy_${BUILD_NUMBER}.log 2>&1 &
+                            ./bin/MCDProxy -port $TEST_TCP_PORT -wsport $TEST_WS_PORT > "$LOG_DIR/proxy.log" 2>&1 &
                             PROXY_PID=$!
                             echo "Test proxy started on TCP:$TEST_TCP_PORT, WS:$TEST_WS_PORT (PID: $PROXY_PID)"
                             sleep 3
@@ -390,10 +423,10 @@ def call(Map config) {
                                 exit 1
                             fi
 
-                            $TESTCLIENT_PATH 127.0.0.1 $TEST_TCP_PORT TestBot1 0 --timeout=180 > /tmp/test_client1_${BUILD_NUMBER}.log 2>&1 &
+                            $TESTCLIENT_PATH 127.0.0.1 $TEST_TCP_PORT TestBot1 0 --timeout=180 > "$LOG_DIR/client1.log" 2>&1 &
                             CLIENT1_PID=$!
                             sleep 1
-                            $TESTCLIENT_PATH 127.0.0.1 $TEST_TCP_PORT TestBot2 1 --timeout=180 > /tmp/test_client2_${BUILD_NUMBER}.log 2>&1 &
+                            $TESTCLIENT_PATH 127.0.0.1 $TEST_TCP_PORT TestBot2 1 --timeout=180 > "$LOG_DIR/client2.log" 2>&1 &
                             CLIENT2_PID=$!
 
                             echo "Test clients started (PIDs: $CLIENT1_PID, $CLIENT2_PID)"
@@ -423,6 +456,17 @@ def call(Map config) {
                         ''', returnStatus: true)
 
                         if (testResult != 0) {
+                            // Keep the FULL logs, not just the console tails.
+                            // mc-n37x is intermittent (~1 run in 3) and its
+                            // evidence is the proxy's own account of why it
+                            // closed a player connection, which sits far above
+                            // the tail. Retention here is the buildDiscarder's
+                            // artifactDaysToKeepStr of 7 days, so a failure
+                            // stays diagnosable for a week rather than being
+                            // gone by the time anyone looks.
+                            archiveArtifacts artifacts: 'integration-logs/*.log',
+                                             allowEmptyArchive: true,
+                                             fingerprint: false
                             error("Integration test failed")
                         }
                     }
