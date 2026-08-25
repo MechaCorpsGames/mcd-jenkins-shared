@@ -58,8 +58,14 @@ and the full rationale are in MCDClient's
 - During the skew window, lagging branches report exactly what they report today.
 - **This repo has no CI**, so review is the only gate. `test/unit/` is the evidence:
   `test_mcd_server_test_junit_reporting.py` runs real ctest against temp trees to pin the
-  behaviour the `allowEmptyResults` choice rests on, rather than asserting it in a comment. If a
-  future ctest starts signalling an empty project through its exit code, those tests fail and say
-  the flag can be tightened.
+  behaviour the `allowEmptyResults` choice rests on, rather than asserting it in a comment.
+- **Those three tests are designed to expire, and that is deliberate rather than incidental.**
+  They pin a fact about a tool this repo does not vendor and cannot pin a version of. If a future
+  ctest starts signalling an empty project through its exit code, or stops writing a report for
+  one, the premise under `allowEmptyResults: true` is gone, the flag could be tightened to `false`
+  to match the GDScript stage, and `require_tests_ran` would become redundant. Nothing would
+  otherwise announce that: the stage would keep passing and the comment would quietly become a
+  lie. So each of the three fails with a message naming what changed and what to revisit, which
+  makes them a dated measurement that reports its own expiry rather than a regression guard.
 - **TestClient (290 cases) and Proxy have the identical gap and are not fixed here.** The bead's
   acceptance is server-only; the mechanism and the path convention now exist for both.

@@ -787,6 +787,16 @@ def call(Map config) {
                     always {
                         script {
                             try {
+                                // allowEmptyResults is TRUE on purpose, next to a
+                                // FALSE on the GDScript stage. Do not "fix" it to
+                                // match: it cannot catch a no-run here (ctest
+                                // exits 0 AND writes a valid tests="0" file, so
+                                // there is always a result to accept), and FALSE
+                                // would red-line release / features/backend /
+                                // features/card while they still carry the old
+                                // build.py. The no-run guard is require_tests_ran
+                                // in MCDClient's build.py. Full reasoning above
+                                // this stage and in the mc-ek9f ADRs.
                                 junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'test-results/server-tests.xml'
                             } catch (NoSuchMethodError e) {
                                 echo "JUnit plugin not installed — skipping test report publishing"
