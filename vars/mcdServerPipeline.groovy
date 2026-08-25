@@ -970,22 +970,6 @@ ENVEOF
                             discordNotify.simple("🔄 ${config.environment.capitalize()} proxy container rebuild in progress", "16776960")
 
                             sh """
-                                # Stop systemd proxy service and legacy containers holding our ports
-                                sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
-                                sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
-
-                                # Kill any Docker container holding our target TCP or WS port (host networking)
-                                for cid in \$(docker ps -q --filter 'network=host'); do
-                                    cname=\$(docker inspect --format '{{.Name}}' "\$cid" | sed 's|^/||')
-                                    if [ "\$cname" = "${containerName}" ]; then continue; fi
-                                    cmd=\$(docker inspect --format '{{join .Config.Cmd " "}}' "\$cid" 2>/dev/null || true)
-                                    if echo "\$cmd" | grep -qE '(^|\\s)${config.tcpPort}(\\s|\$)'; then
-                                        echo "Removing container \$cname holding port ${config.tcpPort}"
-                                        docker rm -f "\$cid" 2>/dev/null || true
-                                    fi
-                                done
-                                docker rm -f ${containerName} 2>/dev/null || true
-
                                 # Src/Proxy/Dockerfile COMPILES the proxy from its build
                                 # context, and 'docker compose build' takes that context
                                 # from the compose project dir (/var/opt/mechacorpsgames/Src)
@@ -1010,6 +994,46 @@ ENVEOF
                                     -f Src/Proxy/Dockerfile \\
                                     -t ${composeProject}-proxy:latest \\
                                     Src
+
+                                # TEARDOWN ORDER IS LOAD-BEARING (mc-ic6h). The image is
+                                # built FIRST, above, and only then is the running proxy
+                                # removed. It used to be the other way round, and the gap
+                                # between the two was a total outage: the 'docker rm -f'
+                                # below destroyed the container, and only then did
+                                # '--no-cache' rebuild the image from scratch, with
+                                # nothing serving for the length of a full image build.
+                                #
+                                # On 2026-08-24 that gap was 10s on MCDServer-Main #958
+                                # and it killed a live match (bead mc-ic6h, GH-2688):
+                                #   22:22:33  docker rm -f     -> client 1006 Abnormal closure
+                                #   22:22:35  (still building) -> reconnect 502 Bad Gateway
+                                #   22:22:43  compose up       -> reconnect 401, match gone
+                                # The proxy container also SPAWNS the game servers
+                                # (-godot-binary/-godot-project in its compose cmd), so
+                                # removing it kills every in-flight match with it, not
+                                # merely the gateway.
+                                #
+                                # The build needs neither the port nor the container name,
+                                # so it is safe to run while the old proxy still serves.
+                                # This does NOT make a deploy safe for live matches: the
+                                # recreate below is still a hard cut. It removes only the
+                                # part of the outage that was pure ordering.
+
+                                # Stop systemd proxy service and legacy containers holding our ports
+                                sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
+                                sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
+
+                                # Kill any Docker container holding our target TCP or WS port (host networking)
+                                for cid in \$(docker ps -q --filter 'network=host'); do
+                                    cname=\$(docker inspect --format '{{.Name}}' "\$cid" | sed 's|^/||')
+                                    if [ "\$cname" = "${containerName}" ]; then continue; fi
+                                    cmd=\$(docker inspect --format '{{join .Config.Cmd " "}}' "\$cid" 2>/dev/null || true)
+                                    if echo "\$cmd" | grep -qE '(^|\\s)${config.tcpPort}(\\s|\$)'; then
+                                        echo "Removing container \$cname holding port ${config.tcpPort}"
+                                        docker rm -f "\$cid" 2>/dev/null || true
+                                    fi
+                                done
+                                docker rm -f ${containerName} 2>/dev/null || true
 
                                 # Compose DEFINITION from the workspace (so command args and
                                 # mounts track the branch) but project dir unchanged (so
