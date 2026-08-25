@@ -731,10 +731,19 @@ EOF
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
+                        // The proxy routes an old client to the server binary that
+                        // speaks its protocol, and learns which protocol a deployed
+                        // version speaks from the manifest this value feeds (mc-mhjd).
+                        // A wrong number here mis-routes every back-compat connection
+                        // silently, so read it strictly: the old `|| echo '1'` fallback
+                        // turned an unreadable header into a plausible-looking lie.
                         def protocolVersion = sh(
-                            script: "grep -oP 'PROTOCOL_VERSION\\s*=\\s*\\K[0-9]+' Src/Include/protocol_ext.h || echo '1'",
+                            script: "grep -oP 'PROTOCOL_VERSION\\s*=\\s*\\K[0-9]+' Src/Include/protocol_ext.h",
                             returnStdout: true
                         ).trim()
+                        if (!(protocolVersion ==~ /[0-9]+/)) {
+                            error("mc-mhjd: could not read PROTOCOL_VERSION from Src/Include/protocol_ext.h (got '${protocolVersion}'). Deploying this build would publish a protocol manifest the proxy cannot trust.")
+                        }
 
                         env.PROTOCOL_VERSION = protocolVersion
 
@@ -773,6 +782,27 @@ EOF
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
+                        # PROTOCOL MANIFEST (mc-mhjd). The proxy maps a deployed
+                        # version -> the protocol it speaks so it can route an old
+                        # client to a server that still understands it (mc-cdjn), and
+                        # it must do that WITHOUT executing the binary to ask. Write
+                        # the protocol next to the binary here in the workspace and
+                        # let the rsync below carry it across, so the manifest and the
+                        # binary can never be deployed apart.
+                        #
+                        # The version directory is read from latest.txt, the same
+                        # source 'Verify Build' pinned the binary path against, so
+                        # protocol.txt cannot land beside a different version than the
+                        # one being deployed. TestClient is built from this same tree
+                        # and therefore speaks this same protocol; the bots are
+                        # version-routed too (mc-cdjn Phase 2).
+                        [ -n "\${PROTOCOL_VERSION}" ] || { echo "mc-mhjd: PROTOCOL_VERSION is unset at deploy. 'Generate Server Manifest' must run first"; exit 1; }
+                        SERVER_VERSION_DIR="bin/versions/\$(dirname "\$(cat bin/versions/latest.txt)")"
+                        TESTCLIENT_VERSION_DIR="bin/testclient-versions/\$(dirname "\$(cat bin/testclient-versions/latest.txt)")"
+                        echo "\${PROTOCOL_VERSION}" > "\${SERVER_VERSION_DIR}/protocol.txt"
+                        echo "\${PROTOCOL_VERSION}" > "\${TESTCLIENT_VERSION_DIR}/protocol.txt"
+                        echo "✓ Protocol manifest: protocol \${PROTOCOL_VERSION} written to \${SERVER_VERSION_DIR}/protocol.txt and \${TESTCLIENT_VERSION_DIR}/protocol.txt"
+
                         mkdir -p ${config.deployPath}/versions ${config.deployPath}/testclient-versions ${config.deployPath}/Data/GameData
                         rsync -rlvz --no-group bin/versions/ ${config.deployPath}/versions/
                         rsync -rlvz --no-group bin/testclient-versions/ ${config.deployPath}/testclient-versions/
@@ -1034,10 +1064,50 @@ ENVEOF
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
-                        cd ${config.deployPath}/versions
-                        ls -dt v*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf || true
-                        cd ${config.deployPath}/testclient-versions
-                        ls -dt v*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf || true
+                        # RETENTION (mc-mhjd). Keeping the newest five was the whole
+                        # rule, and on its own it can delete a server binary out from
+                        # under a LIVE MATCH: the proxy routes old clients to old
+                        # versions (mc-cdjn), so a version past the newest five may
+                        # still be serving players. The keep-5 count stays as the
+                        # safety cap; the in-use lease below is the correctness fix.
+                        # A version is deleted only if it is BOTH beyond keep-5 AND
+                        # unleased.
+                        #
+                        # THE LEASE. This contract is shared verbatim with the proxy
+                        # (mc-epfh); both sides hardcode the same path:
+                        #   path       <version-dir>/.in-use
+                        #   created    by the proxy when a match starts on that version
+                        #   refreshed  touched at least every 5 minutes while any match
+                        #              on that version is still live
+                        #   removed    when the last match on that version ends
+                        #
+                        # It is a LEASE rather than a plain flag because a plain flag
+                        # is unsafe in both directions. A proxy that dies mid-match
+                        # would leave a flag behind that pins the version forever, and
+                        # versions only accumulate here, so the disk grows without
+                        # bound. An expiring lease reclaims that version on a later
+                        # run. The expiry is 12x the refresh interval, so a live match
+                        # would have to miss twelve consecutive touches to be treated
+                        # as dead.
+                        IN_USE_LEASE_MINUTES=60
+
+                        prune_versions() {
+                            target="\$1"
+                            [ -d "\$target" ] || return 0
+                            cd "\$target" || return 0
+                            for candidate in \$(ls -dt v*/ 2>/dev/null | tail -n +6); do
+                                version="\${candidate%/}"
+                                if [ -n "\$(find "\$version" -maxdepth 1 -name .in-use -mmin -"\${IN_USE_LEASE_MINUTES}" 2>/dev/null)" ]; then
+                                    echo "⏸ keeping \${version} (in-use lease held, a match is live on it)"
+                                    continue
+                                fi
+                                rm -rf "\$version"
+                                echo "🗑 removed \${version}"
+                            done
+                        }
+
+                        prune_versions "${config.deployPath}/versions" || true
+                        prune_versions "${config.deployPath}/testclient-versions" || true
                         echo "✓ Cleanup complete for ${config.environment}"
                     """
                 }
