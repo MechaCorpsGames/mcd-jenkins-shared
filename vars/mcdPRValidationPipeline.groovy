@@ -782,6 +782,44 @@ def call(Map config) {
                 }
             }
 
+            // MCDServerTest is 2434 gtest cases, and ctest knows every one of
+            // them by name: Test/CMakeLists.txt registers them with
+            // gtest_discover_tests. They have always been GATED correctly here,
+            // because a failing case exits non-zero and this shebang-less body
+            // runs under /bin/sh -xe. What was missing was the ability to see
+            // WHICH case failed. Nothing wrote JUnit XML and no junit step
+            // collected any, so a full server run published to Jenkins as
+            // "Total: 1": #1670 (server-only PR 2666) reported Total: 1,
+            // Passed: 1 while polecat-4 ran 2434 cases locally on that same
+            // commit (mc-ek9f).
+            //
+            // "Total: 1" is worse than no number at all. It reads like a green
+            // that skipped everything, and a mayor session on 2026-08-24 nearly
+            // declined to merge PR 2666 on that basis, proceeding only after
+            // reading the stage list instead of the badge.
+            //
+            // COLLECTION SITS IN post{always} DELIBERATELY. In steps{} it would
+            // be skipped on exactly the runs whose per-case report is the whole
+            // point: the ones where the suite failed.
+            //
+            // WHY allowEmptyResults IS TRUE HERE, against the GDScript stage's
+            // precedent (mc-rqgm), and why that is not a hole:
+            //
+            //   1. It cannot be the no-run guard people expect it to be.
+            //      Measured with ctest 4.4.0: a project with nothing registered
+            //      prints "No tests were found!!!", exits 0, AND writes a
+            //      well-formed <testsuite name="(empty)" tests="0"/>. junit
+            //      accepts that file, so allowEmptyResults never fires. The
+            //      guard has to read the file's CONTENT, and it does:
+            //      Src/GameServer/build.py refuses a 0-case run itself
+            //      (require_tests_ran), before this step is ever reached.
+            //   2. FALSE would red-line branches that lag main. This library is
+            //      shared by every job, and release, features/backend and
+            //      features/card keep the old build.py, which writes no XML at
+            //      all, until the MCDClient change reaches them. Same skew, and
+            //      the same treatment, as 'TestClient Unit Tests' and 'Script
+            //      Tests': a branch that cannot produce the artifact is passed
+            //      over, while a branch that can and fails still fails.
             stage('Unit Tests') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
                 steps {
@@ -789,6 +827,27 @@ def call(Map config) {
                         cd Src/GameServer
                         ./build.sh --test --release
                     """
+                }
+                post {
+                    always {
+                        script {
+                            try {
+                                // allowEmptyResults is TRUE on purpose, next to a
+                                // FALSE on the GDScript stage. Do not "fix" it to
+                                // match: it cannot catch a no-run here (ctest
+                                // exits 0 AND writes a valid tests="0" file, so
+                                // there is always a result to accept), and FALSE
+                                // would red-line release / features/backend /
+                                // features/card while they still carry the old
+                                // build.py. The no-run guard is require_tests_ran
+                                // in MCDClient's build.py. Full reasoning above
+                                // this stage and in the mc-ek9f ADRs.
+                                junit allowEmptyResults: true, skipPublishingChecks: true, testResults: 'test-results/server-tests.xml'
+                            } catch (NoSuchMethodError e) {
+                                echo "JUnit plugin not installed — skipping test report publishing"
+                            }
+                        }
+                    }
                 }
             }
 
