@@ -42,10 +42,23 @@ def call(Map config) {
             // builds should only trim to latest when there are duplicate builds
             // for a single PR, otherwise, all of them should run."
             //
-            // Worse than the waste: an abortPrevious kill records NOT_BUILT, and
-            // Declarative's post{aborted} fires on ABORTED, not on NOT_BUILT. So
-            // the terminal status never got posted and the PR sat on
-            // 'Validation started' forever with mergeStateStatus BLOCKED.
+            // Worse than the waste: a killed build never posts a result at all,
+            // so the PR sat on the 'pending' status this pipeline sets in 'Setup
+            // PR Info' forever, with mergeStateStatus BLOCKED. Two things had to
+            // be true for that and both are, measured from the stage lists on
+            // 2026-08-25: the kill records NOT_BUILT, which post{aborted} does
+            // not fire on, AND the killed build never reaches the post block in
+            // the first place. #1764, which really did pass, carries a
+            // 'Declarative: Post Actions' stage; #1763 and #1766, which were
+            // killed, carry none. So no post handler, present or future, could
+            // have rescued those builds. Not killing them is the fix.
+            //
+            // The other tell, for whoever reads a stage list next: a stage that
+            // its when{} skipped costs about a second, so a NOT_EXECUTED stage
+            // with real time on it is a stage that was RUNNING when the
+            // interrupt landed. #1766 shows 'Build GameServer, TestClient &
+            // Proxy' NOT_EXECUTED with 54s against it. NOT_BUILT alone does not
+            // tell you whether a build passed or was shot.
             //
             // Nothing at this level can express "same PR". disableConcurrentBuilds
             // and milestone() are both keyed on the job and ordered by build
@@ -1333,23 +1346,30 @@ def call(Map config) {
                 }
             }
 
-            // THE CHECK MUST NEVER BE LEFT PENDING. This is the backstop, and it
-            // is the half of mc-waxw that actually blocked merges.
+            // THE CHECK MUST NEVER BE LEFT PENDING, for any build that gets as
+            // far as running its post block.
             //
             // 'Setup PR Info' posts 'pending' on the head SHA before anything
-            // else runs, and until 2026-08-25 exactly three handlers could ever
+            // else runs, and until 2026-08-25 exactly three handlers could
             // replace it: success, failure and aborted. A build that ends
-            // NOT_BUILT matches none of them, so the PR sat on a check that could
-            // never resolve and mergeStateStatus went BLOCKED. Measured on
-            // 2026-08-25: MCD-PR-Main #1761 and #1766 both ended NOT_BUILT and
-            // left PR-2714 and PR-2720 reading 'pending: Validation started' with
-            // no build still running for either.
+            // NOT_BUILT matches none of them, so the PR was left on a check that
+            // could never resolve and mergeStateStatus went BLOCKED.
             //
-            // NOT_BUILT arrives from several directions and more will be added,
-            // which is why this is a cleanup{} sweep over "did anything terminal
-            // get posted" rather than a notBuilt{} handler enumerating causes.
-            // cleanup runs last, after success/failure/aborted have had their
-            // turn, so it can see what they did and stay out of the way.
+            // KNOW WHAT THIS DOES AND DOES NOT COVER. It cannot save a build that
+            // is killed from outside: an interrupted run never reaches Post
+            // Actions, so no post handler runs at all (MCD-PR-Main #1763 and
+            // #1766 have no 'Declarative: Post Actions' stage; #1764, which
+            // passed, has one). Removing the job-wide abort is what fixes that
+            // case. What this covers is every NOT_BUILT that arrives through the
+            // pipeline's own front door, where the post block does run: a
+            // trailing all-skipped block propagating to the run result, a PR
+            // merged out from under the build, a build trimmed by
+            // mcdPrSupersession, and whatever gets added next.
+            //
+            // Hence a cleanup{} sweep over "did anything terminal get posted"
+            // rather than a notBuilt{} handler enumerating causes. cleanup runs
+            // last, after success/failure/aborted have had their turn, so it can
+            // see what they did and stay out of the way.
             cleanup {
                 script {
                     if (env.PR_STATUS_POSTED == 'true') {
