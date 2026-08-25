@@ -28,6 +28,51 @@ def call(Map config) {
         options {
             buildDiscarder(logRotator(numToKeepStr: '20'))
             timeout(time: 45, unit: 'MINUTES')
+            // Newest push wins (bead mc-w2iu). Tim, 2026-08-24: "when they get
+            // stacked up, we need to manually go cancel builds until we're
+            // building only the latest, or just have patience."
+            //
+            // WHY abortPrevious AND NOT ONE OF THE SOFTER MECHANISMS. Both of
+            // the alternatives need the NEWER build to be running, and once a
+            // pipeline serializes, the newer build is sitting in the queue with
+            // no Run object at all:
+            //   * milestone() aborts older builds that have not yet PASSED the
+            //     milestone. A queued build has passed nothing, and a build
+            //     eighteen minutes into validation has already passed one
+            //     placed after Checkout, so it survives. It cancels the case
+            //     that costs nothing and spares the case that costs 25 minutes.
+            //   * a self-skip in mcdSteamUploadPipeline's UPLOAD_SUPERSEDED
+            //     style would test currentBuild.nextBuild, which is null for a
+            //     build that has not started. Exactly when it is needed.
+            // abortPrevious is the only one that acts on a build that is
+            // already burning an executor, which is the whole complaint.
+            //
+            // WHY THIS PIPELINE AND NOT THE SERVER OR CLIENT ONE. abortPrevious
+            // aborts the older build WHEREVER IT IS; there is no stage scoping.
+            // mcdServerPipeline's 'Deploy GameServer & TestClient' rsyncs into
+            // config.deployPath and mc-mhjd requires its protocol manifest and
+            // its binary to arrive together; mcdClientPipeline's 'Publish Bot
+            // Runtime' does an rsync --delete into a shared path, and the
+            // comment on ITS disableConcurrentBuilds() records that the
+            // serialization exists because that rsync already blew up once.
+            // Killing either mid-rsync leaves the half-written state those
+            // controls exist to prevent, so neither gets this option until its
+            // publish step is interrupt-safe.
+            //
+            // PR validation is the safe place precisely because it PUBLISHES
+            // NOTHING: no rsync, no write under /opt/mechacorps (the mount in
+            // the agent args is not a write), just build and test. An aborted
+            // run leaves a workspace and nothing else.
+            //
+            // Applies to every lane this pipeline serves, MCD-PR-Release
+            // included. Declarative options are parsed statically and nothing
+            // in this library puts a computed value in one, so making this
+            // conditional would invent a pattern whose failure mode is a parse
+            // error in a shared var, which takes every job down (#82). It is
+            // also unnecessary: the reason release is normally exempt from
+            // auto-cancel is that you must never abort a release DEPLOY, and
+            // validating a pull request deploys nothing.
+            disableConcurrentBuilds(abortPrevious: true)
         }
 
         environment {
