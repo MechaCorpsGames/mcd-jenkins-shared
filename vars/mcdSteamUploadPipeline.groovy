@@ -347,7 +347,17 @@ def call(Map config) {
                         // send somebody chasing an outage that did not happen. A failed write
                         // is real (players stop being nudged), so it goes to UNSTABLE with a
                         // named cause rather than being swallowed.
-                        int status = sh(returnStatus: true, script: """
+                        //
+                        // The #!/bin/bash is LOAD-BEARING, not decoration. Jenkins'
+                        // sh step runs the script with /bin/sh, which on this
+                        // debian:bookworm agent is dash, and dash has no `-o
+                        // pipefail`. Without the shebang this whole script died on
+                        // its FIRST line with "Illegal option -o pipefail" (exit 2)
+                        // -- so the signal was never written, and every upload from
+                        // build #661 on went UNSTABLE while reporting each stage
+                        // green. The stage cannot self-detect that: the failure it
+                        // reports is the one it was built to report.
+                        int status = sh(returnStatus: true, script: """#!/bin/bash
                             set -euo pipefail
                             mkdir -p ${signalDir}
                             cat > ${signalPath}.tmp << EOF
