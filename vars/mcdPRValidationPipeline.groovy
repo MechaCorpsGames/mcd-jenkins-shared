@@ -934,8 +934,24 @@ def call(Map config) {
 
                             cleanup() {
                                 echo ""
-                                echo "=== Proxy Log (last 20 lines) ==="
+                                # MCDProxy writes NOTHING to stdout/stderr: Src/Proxy/main.go:826-836
+                                # opens logs/proxy.log under --log-dir (default "logs") and points
+                                # slog.SetDefault at that file. So the /tmp redirect below is empty by
+                                # construction, and every "Player 0 disconnected" failure of this stage
+                                # (mc-jods: #1767, #1782) printed an empty proxy log and could not be
+                                # diagnosed. Tail the file the proxy actually writes, and the newest
+                                # game-server logs beside it, which is where the disconnect is decided.
+                                echo "=== Proxy stdout/stderr (expected empty, see mc-jods) ==="
                                 tail -20 /tmp/test_proxy_${BUILD_NUMBER}.log 2>/dev/null || echo "(no proxy log)"
+                                echo ""
+                                echo "=== logs/proxy.log (last 60 lines) ==="
+                                tail -60 logs/proxy.log 2>/dev/null || echo "(no logs/proxy.log)"
+                                echo ""
+                                echo "=== newest game-server logs under logs/ (last 40 lines each) ==="
+                                for f in $(ls -t logs/*.log 2>/dev/null | grep -v '/proxy.log$' | head -3); do
+                                    echo "--- $f ---"
+                                    tail -40 "$f"
+                                done
                                 echo ""
                                 echo "=== Client 1 Log (last 15 lines) ==="
                                 tail -15 /tmp/test_client1_${BUILD_NUMBER}.log 2>/dev/null || echo "(no client1 log)"
