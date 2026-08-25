@@ -28,51 +28,66 @@ def call(Map config) {
         options {
             buildDiscarder(logRotator(numToKeepStr: '20'))
             timeout(time: 45, unit: 'MINUTES')
-            // Newest push wins (bead mc-w2iu). Tim, 2026-08-24: "when they get
-            // stacked up, we need to manually go cancel builds until we're
-            // building only the latest, or just have patience."
+            // NO JOB-WIDE CONCURRENCY CONTROL, DELIBERATELY. Read this before
+            // adding one back (bead mc-waxw).
             //
-            // WHY abortPrevious AND NOT ONE OF THE SOFTER MECHANISMS. Both of
-            // the alternatives need the NEWER build to be running, and once a
-            // pipeline serializes, the newer build is sitting in the queue with
-            // no Run object at all:
-            //   * milestone() aborts older builds that have not yet PASSED the
-            //     milestone. A queued build has passed nothing, and a build
-            //     eighteen minutes into validation has already passed one
-            //     placed after Checkout, so it survives. It cancels the case
-            //     that costs nothing and spares the case that costs 25 minutes.
-            //   * a self-skip in mcdSteamUploadPipeline's UPLOAD_SUPERSEDED
-            //     style would test currentBuild.nextBuild, which is null for a
-            //     build that has not started. Exactly when it is needed.
-            // abortPrevious is the only one that acts on a build that is
-            // already burning an executor, which is the whole complaint.
+            // mc-w2iu put disableConcurrentBuilds(abortPrevious: true) here to
+            // make the newest push to a PR win. It did that, and it also did
+            // something nobody wanted: the option is scoped to the JOB, and
+            // MCD-PR-Main is one job serving every open pull request, so a push
+            // to any PR aborted the in-flight build of an unrelated one. Within
+            // an hour on 2026-08-25, builds #1757 (PR-2708), #1759 (PR-2716),
+            // #1761 (PR-2714), #1762 (PR-2718) and #1766 (PR-2720) ended
+            // NOT_BUILT, mostly killed by somebody else's branch. Tim: "PR
+            // builds should only trim to latest when there are duplicate builds
+            // for a single PR, otherwise, all of them should run."
             //
-            // WHY THIS PIPELINE AND NOT THE SERVER OR CLIENT ONE. abortPrevious
-            // aborts the older build WHEREVER IT IS; there is no stage scoping.
-            // mcdServerPipeline's 'Deploy GameServer & TestClient' rsyncs into
-            // config.deployPath and mc-mhjd requires its protocol manifest and
-            // its binary to arrive together; mcdClientPipeline's 'Publish Bot
-            // Runtime' does an rsync --delete into a shared path, and the
-            // comment on ITS disableConcurrentBuilds() records that the
-            // serialization exists because that rsync already blew up once.
-            // Killing either mid-rsync leaves the half-written state those
-            // controls exist to prevent, so neither gets this option until its
-            // publish step is interrupt-safe.
+            // Worse than the waste: a killed build never posts a result at all,
+            // so the PR sat on the 'pending' status this pipeline sets in 'Setup
+            // PR Info' forever, with mergeStateStatus BLOCKED. Two things had to
+            // be true for that and both are, measured from the stage lists on
+            // 2026-08-25: the kill records NOT_BUILT, which post{aborted} does
+            // not fire on, AND the killed build never reaches the post block in
+            // the first place. #1764, which really did pass, carries a
+            // 'Declarative: Post Actions' stage; #1763 and #1766, which were
+            // killed, carry none. So no post handler, present or future, could
+            // have rescued those builds. Not killing them is the fix.
             //
-            // PR validation is the safe place precisely because it PUBLISHES
-            // NOTHING: no rsync, no write under /opt/mechacorps (the mount in
-            // the agent args is not a write), just build and test. An aborted
-            // run leaves a workspace and nothing else.
+            // The other tell, for whoever reads a stage list next: a stage that
+            // its when{} skipped costs about a second, so a NOT_EXECUTED stage
+            // with real time on it is a stage that was RUNNING when the
+            // interrupt landed. #1766 shows 'Build GameServer, TestClient &
+            // Proxy' NOT_EXECUTED with 54s against it. NOT_BUILT alone does not
+            // tell you whether a build passed or was shot.
             //
-            // Applies to every lane this pipeline serves, MCD-PR-Release
-            // included. Declarative options are parsed statically and nothing
-            // in this library puts a computed value in one, so making this
-            // conditional would invent a pattern whose failure mode is a parse
-            // error in a shared var, which takes every job down (#82). It is
-            // also unnecessary: the reason release is normally exempt from
-            // auto-cancel is that you must never abort a release DEPLOY, and
-            // validating a pull request deploys nothing.
-            disableConcurrentBuilds(abortPrevious: true)
+            // Nothing at this level can express "same PR". disableConcurrentBuilds
+            // and milestone() are both keyed on the job and ordered by build
+            // number, with no notion of a parameter; mcdSteamSourceBuild.groovy
+            // records the identical finding for one job serving four Steam
+            // branches. A computed value cannot go in an options block either:
+            // Declarative parses it statically and a computed value here is a
+            // parse error in a shared var, which takes every job down (#82).
+            //
+            // So supersession moved to where it can be keyed correctly, in
+            // mcdPrSupersession.groovy: an older build sees a newer build of the
+            // SAME pr_number through currentBuild.nextBuild and stands itself
+            // down. That check needs the newer build to be RUNNING, which is
+            // exactly why it was rejected while this option was here (a
+            // serialized job leaves the newer build queued with no Run object)
+            // and exactly why it works now that the option is gone.
+            //
+            // Concurrency is safe on THIS pipeline and only on this one. It
+            // publishes nothing: /opt/mechacorps appears once, in the agent's
+            // docker mount args, and in no sh body, so there is no rsync and no
+            // write to a shared path. Jenkins gives concurrent runs their own
+            // @2/@3 workspaces. And it is the status quo restored, not a new
+            // experiment: this pipeline ran with no concurrency control at all
+            // until 2026-08-24.
+            //
+            // The pipelines that DO publish through rsync still must not be
+            // interrupted at an arbitrary point, and they are not: they trim
+            // with mcdRedundantBuild.groovy, which only ever skips work a
+            // previous build already finished, and never touches a running one.
         }
 
         environment {
@@ -185,7 +200,7 @@ def call(Map config) {
             }
 
             stage('Detect Changes') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() } }
                 steps {
                     script {
                         def changes = mcdChangeDetection.detect("refs/remotes/origin/${config.targetBranch}")
@@ -244,7 +259,7 @@ def call(Map config) {
             // Ref' above fetches origin/${targetBranch} and merges the PR head onto
             // it, so that ref is the true base and the working tree is the merge.
             stage('ADR Identifier Gate') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() } }
                 steps {
                     // Branch-skew guard, same shape as 'Script Tests' below: this
                     // library is shared by every job, and release / features/backend
@@ -290,7 +305,7 @@ def call(Map config) {
             // Runs here, before Setup Dependencies and every build, so it fails
             // fast.
             stage('Native Library ABI Check') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() } }
                 steps {
                     // Branch-skew guard, same shape as 'ADR Identifier Gate'
                     // above and 'Script Tests' below, and not a failure swallow.
@@ -314,7 +329,7 @@ def call(Map config) {
             }
 
             stage('Go Lint') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh '''
                         echo "Installing golangci-lint..."
@@ -340,7 +355,7 @@ def call(Map config) {
             // that PR must both merge for the gate to be effective; the
             // jenkins-shared PR description spells out the merge order.
             stage('Per-module Go tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() } }
                 // PR validation doesn't bring up Postgres, so the
                 // `requireIntegrationDB(t)` guard added by MCDClient #1443
                 // would exit(1) any package that hits it. Tell the test
@@ -388,7 +403,7 @@ def call(Map config) {
             // SIGSEGV postmortem). Pure Python, no deps; runs before any
             // build so it fails fast.
             stage('Resource Path Case Check') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh '''
                         if [ -f scripts/check_res_path_case.py ]; then
@@ -407,7 +422,7 @@ def call(Map config) {
             // so it fails fast. File-existence guard keeps it a no-op on branches
             // that predate the script (mirrors the case check above).
             stage('Authoring Data Reference Check') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh '''
                         if [ -f scripts/check_authoring_data_refs.py ]; then
@@ -428,7 +443,7 @@ def call(Map config) {
             // File-existence guard keeps it a no-op on branches that predate
             // the script (mirrors the checks above).
             stage('Bot KPI Parser Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
                 steps {
                     sh '''
                         if [ -f scripts/test_bot_kpis.py ]; then
@@ -441,7 +456,7 @@ def call(Map config) {
             }
 
             stage('Setup Dependencies') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
                 steps {
                     sh 'chmod +x scripts/setup-deps.sh && ./scripts/setup-deps.sh'
                 }
@@ -469,7 +484,7 @@ def call(Map config) {
             // it is a Python pass over card JSON, trivial next to a GameServer
             // build, and both halves consume the output.
             stage('Populate GameData') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && (env.SERVER_CHANGED == 'true' || env.CLIENT_CHANGED == 'true') } }
                 steps {
                     sh 'make export-done'
                     // Fail here, loudly, rather than 20 minutes later as a wall of
@@ -481,7 +496,7 @@ def call(Map config) {
             // MCDCoreExt Linux debug must be built before GDScript tests
             // because tests depend on GDExtension types (CardId, etc.)
             stage('Build MCDCoreExt Linux (for tests)') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh """
                         cd Src/MCDCoreExt
@@ -496,7 +511,7 @@ def call(Map config) {
             // broken release script fails fast. `scripts/**` is part of the
             // client change filter, so any edit to those tools lands here.
             stage('Script Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     // Branch-skew guard, not a failure swallow. This library is
                     // shared by every job, and release, features/backend and
@@ -548,7 +563,7 @@ def call(Map config) {
             // this pipes through. Only the assertion "nothing of that class
             // survived the filter" is stated here as well as in the Makefile.
             stage('GDScript Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh '''#!/bin/bash
                         # -e is not optional. This body has a shebang, so Jenkins
@@ -669,7 +684,7 @@ def call(Map config) {
             stage('UI Tests (Xvfb)') {
                 when {
                     expression {
-                        env.PR_ALREADY_MERGED != 'true' &&
+                        env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() &&
                         env.CLIENT_CHANGED == 'true' &&
                         config.uiTests?.enabled == true
                     }
@@ -706,7 +721,7 @@ def call(Map config) {
             // Gated on CLIENT_CHANGED to match GDScript Tests above; addons/**
             // already routes to the 'client' category in mcdChangeDetection.
             stage('Card Validator Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh '''
                         rm -rf test-results/card_validator_junit.xml
@@ -736,7 +751,7 @@ def call(Map config) {
             // Gated on CLIENT_CHANGED — Src/Validation/** now routes to the
             // 'client' category in mcdChangeDetection (see this PR).
             stage('Validation C++ Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh '''
                         rm -f test-results/validation_tests.xml
@@ -757,7 +772,7 @@ def call(Map config) {
             }
 
             stage('Build GameServer, TestClient & Proxy') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
                         rm -rf bin/versions/v* bin/testclient-versions/v*
@@ -769,7 +784,7 @@ def call(Map config) {
             }
 
             stage('Verify Server Build') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
                         env.SERVER_VERSION_PATH = readFile('bin/versions/latest.txt').trim()
@@ -821,7 +836,7 @@ def call(Map config) {
             //      Tests': a branch that cannot produce the artifact is passed
             //      over, while a branch that can and fails still fails.
             stage('Unit Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh """
                         cd Src/GameServer
@@ -883,7 +898,7 @@ def call(Map config) {
             // change reaches them. Absent target is skipped and said out loud; a
             // target that exists and fails still fails the build.
             stage('TestClient Unit Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh '''
                         if ! make -n test-testclient >/dev/null 2>&1; then
@@ -896,14 +911,14 @@ def call(Map config) {
             }
 
             stage('Proxy Unit Tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.SERVER_CHANGED == 'true' } }
                 steps {
                     sh 'make test-proxy'
                 }
             }
 
             stage('Integration Test') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && env.SERVER_CHANGED == 'true' } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.SERVER_CHANGED == 'true' } }
                 steps {
                     script {
                         def testResult = sh(script: '''
@@ -1003,7 +1018,7 @@ def call(Map config) {
             stage('Tutorial Validation') {
                 when {
                     expression {
-                        env.PR_ALREADY_MERGED != 'true' &&
+                        env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() &&
                         (env.SERVER_CHANGED == 'true' || env.TUTORIAL_CHANGED == 'true')
                     }
                 }
@@ -1062,7 +1077,7 @@ def call(Map config) {
                 // test framework before this stage's post block runs).
                 when {
                     allOf {
-                        expression { env.PR_ALREADY_MERGED != 'true' && env.MCP_GAME_SERVER_CHANGED == 'true' }
+                        expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.MCP_GAME_SERVER_CHANGED == 'true' }
                         // Src/MCPGameServer/ doesn't exist on main yet — skip
                         // the stage on branches that don't ship the dir.
                         expression { fileExists('Src/MCPGameServer') }
@@ -1116,7 +1131,7 @@ def call(Map config) {
                 // agent image. ADR mc-lf0 pins v1 to Linux, not cross-arch.
                 when {
                     expression {
-                        env.PR_ALREADY_MERGED != 'true' &&
+                        env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() &&
                         config.determinismHarness?.enabled == true &&
                         (env.DETERMINISM_PER_PR_CHANGED == 'true' || env.DETERMINISM_WIRE_FORMAT_CHANGED == 'true')
                     }
@@ -1151,7 +1166,7 @@ def call(Map config) {
             // Linux Debug was already built above (for tests), so we only need
             // Linux Release + Windows + Android — all run in parallel.
             stage('Cross-platform Builds (Release PR)') {
-                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
                 parallel {
                     stage('MCDCoreExt Linux Release') {
                         steps {
@@ -1237,7 +1252,7 @@ def call(Map config) {
             }
 
             stage('Verify All Platform Builds') {
-                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && env.CLIENT_CHANGED == 'true' } }
+                when { expression { config.targetBranch == 'release' && env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
                 steps {
                     sh """
                         echo "=== Linux Builds ==="
@@ -1274,6 +1289,17 @@ def call(Map config) {
                         echo "PR was already merged — no validation performed."
                         return
                     }
+                    // Belt and braces, the same shape mcdSteamUploadPipeline uses
+                    // for UPLOAD_SUPERSEDED. Declarative should already keep this
+                    // handler off a NOT_BUILT run, but MCD-PR-Main #1764 finished
+                    // NOT_BUILT and still posted 'Validation passed (17 min)' to
+                    // PR-2719, so the ordering between a late result change and
+                    // the post block is not something to bet a green check on. A
+                    // trimmed build must never claim its PR passed.
+                    if (env.PR_SUPERSEDED == 'true') {
+                        echo "Superseded by build #${env.SUPERSEDED_BY} — not reporting a result for this one."
+                        return
+                    }
                     def duration = currentBuild.durationString.replace(' and counting', '')
                     def tier = (config.targetBranch == 'release') ? 'Full validation' : 'Validation'
                     def scope = ''
@@ -1298,6 +1324,10 @@ def call(Map config) {
             }
             failure {
                 script {
+                    if (env.PR_SUPERSEDED == 'true') {
+                        echo "Superseded by build #${env.SUPERSEDED_BY} — not reporting a result for this one."
+                        return
+                    }
                     def duration = currentBuild.durationString.replace(' and counting', '')
                     def tier = (config.targetBranch == 'release') ? 'Full validation' : 'Validation'
                     setGitHubStatus('failure', "${tier} failed (${duration})", statusContext)
@@ -1315,6 +1345,51 @@ def call(Map config) {
                     setGitHubStatus('error', 'Build was aborted', statusContext)
                 }
             }
+
+            // THE CHECK MUST NEVER BE LEFT PENDING, for any build that gets as
+            // far as running its post block.
+            //
+            // 'Setup PR Info' posts 'pending' on the head SHA before anything
+            // else runs, and until 2026-08-25 exactly three handlers could
+            // replace it: success, failure and aborted. A build that ends
+            // NOT_BUILT matches none of them, so the PR was left on a check that
+            // could never resolve and mergeStateStatus went BLOCKED.
+            //
+            // KNOW WHAT THIS DOES AND DOES NOT COVER. It cannot save a build that
+            // is killed from outside: an interrupted run never reaches Post
+            // Actions, so no post handler runs at all (MCD-PR-Main #1763 and
+            // #1766 have no 'Declarative: Post Actions' stage; #1764, which
+            // passed, has one). Removing the job-wide abort is what fixes that
+            // case. What this covers is every NOT_BUILT that arrives through the
+            // pipeline's own front door, where the post block does run: a
+            // trailing all-skipped block propagating to the run result, a PR
+            // merged out from under the build, a build trimmed by
+            // mcdPrSupersession, and whatever gets added next.
+            //
+            // Hence a cleanup{} sweep over "did anything terminal get posted"
+            // rather than a notBuilt{} handler enumerating causes. cleanup runs
+            // last, after success/failure/aborted have had their turn, so it can
+            // see what they did and stay out of the way.
+            cleanup {
+                script {
+                    if (env.PR_STATUS_POSTED == 'true') {
+                        return
+                    }
+
+                    // A newer build for the SAME head SHA owns that SHA's status.
+                    // Posting here would race it and could paint a passing PR red,
+                    // so the trimmed build says nothing and lets the winner report.
+                    if (env.PR_SUPERSEDED == 'true' && env.SUPERSEDED_BY_SHA == env.pr_head_sha) {
+                        echo "Superseded by build #${env.SUPERSEDED_BY} on the same SHA — leaving the status to that build."
+                        return
+                    }
+
+                    String why = (env.PR_SUPERSEDED == 'true')
+                        ? "Superseded by build #${env.SUPERSEDED_BY}"
+                        : "Build did not complete (${currentBuild.currentResult})"
+                    setGitHubStatus('error', why, statusContext)
+                }
+            }
         }
     }
 }
@@ -1326,6 +1401,14 @@ def call(Map config) {
 def setGitHubStatus(String state, String description, String context) {
     def buildUrl = "${env.JENKINS_URL_BASE}/job/${env.JOB_NAME}/${BUILD_NUMBER}/"
     def truncDesc = description.take(140)
+
+    // What the cleanup{} backstop reads. 'pending' deliberately does not count:
+    // it is the status the backstop exists to replace. Set before the curl, not
+    // after, so a failed POST does not turn into a second POST from cleanup
+    // reporting a different thing.
+    if (state != 'pending') {
+        env.PR_STATUS_POSTED = 'true'
+    }
 
     sh """
         curl -s -X POST \

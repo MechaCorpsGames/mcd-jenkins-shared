@@ -171,6 +171,33 @@ def call(Map config) {
                 }
             }
 
+            // Trim to latest (bead mc-waxw). Tim, 2026-08-25: "for all builds
+            // other than PR builds we should be trimming to latest."
+            //
+            // A burst of pushes queues one build per push behind this job's
+            // disableConcurrentBuilds(), and each of them checks out the branch
+            // TIP rather than the commit its own webhook carried. So the ones
+            // behind the first do identical work for nothing. This stands those
+            // down by clearing the same flags 'Detect Changes' clears when a push
+            // touches nothing here, which routes the build down the no-op path
+            // this pipeline already takes several times a day.
+            //
+            // It only ever skips a commit an EARLIER build of this job already
+            // built and succeeded on, so it cannot strand a deploy: see
+            // mcdRedundantBuild.groovy for why that direction matters, and why
+            // this is not abortPrevious.
+            stage('Trim to Latest') {
+                steps {
+                    script {
+                        if (mcdRedundantBuild.trim()) {
+                            env.CRASH_REPORTING_CHANGED = 'false'
+                            env.WIKI_CHANGED = 'false'
+                            env.MONITORING_CHANGED = 'false'
+                        }
+                    }
+                }
+            }
+
             // ================================================================
             // Each service stage is catchError-wrapped: one failure marks
             // the build UNSTABLE but does NOT block other services.

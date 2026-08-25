@@ -2,7 +2,20 @@
 
 Date: 2026-08-25
 
-Status: Accepted
+Status: Amended the same day by
+[2026-08-25-build-trimming-is-keyed-on-the-thing-being-built](2026-08-25-build-trimming-is-keyed-on-the-thing-being-built.md).
+
+The decision below that `abortPrevious` goes on `mcdPRValidationPipeline` is
+**reversed**: the option is scoped to the job, and `MCD-PR-Main` is one job
+serving every open PR, so it aborted unrelated PRs and left their checks pending
+forever (bead mc-waxw, five PRs inside one hour). PR supersession now keys on
+`pr_number` in `mcdPrSupersession.groovy`.
+
+Everything else here **stands**, including the exclusion of `mcdServerPipeline`
+and `mcdClientPipeline` and the reasoning for it. One detail is worth reading with
+the amendment in hand: the rejection of a `nextBuild` self-skip below is correct
+*for a serialized pipeline*, and stops being true for the PR pipeline once the
+serialization is removed.
 
 ## Context
 
