@@ -147,10 +147,21 @@ Written down because the misreading is cheap and the consequence is expensive:
 someone merges this, sees three concurrent builds a minute later, concludes it
 did not work, and reverts a working fix.
 
-**The falsifier, stated so it cannot be quietly skipped:** `#1017` onward should
-serialize. If a build *after* the installing one still runs concurrently with
-another, this explanation is wrong and there is a real defect. At the time of
-writing that had not yet been observed either way.
+**The falsifier was stated in advance and has since RESOLVED, in the explanation's
+favour.** The prediction was that `#1017` onward would serialize, and that a build
+after the installing one still running concurrently would mean the explanation was
+wrong. Observed on the master:
+
+```
+#1016  start 05:02:43Z  end 05:36:08Z  SUCCESS    33min  v0.2.1016
+#1017  start 05:36:09Z                 NOT_BUILT   5min  trimmed (built by #1016)
+```
+
+**One second** between `#1016` finishing and `#1017` starting. `#1017`'s own log
+reads "Still waiting to schedule task" and "Waiting for next available executor"
+for 34 minutes, then it started the instant the job was released. That gap is
+`disableConcurrentBuilds()`, and `#1016` was indeed the build that recorded the
+property rather than one governed by it.
 
 ### Fewer builds is the binding constraint, so this is a throughput fix too
 
@@ -167,9 +178,21 @@ PENDING.
 When the binding constraint is CPU on one box, the only lever that helps is
 **fewer builds**. Serialization delivers exactly that, by the mechanism the
 section above describes: a queued build can see a finished predecessor on the
-same commit, and a parallel one cannot. Tonight's burst ran three full
-twenty-minute builds on three different commits and trimmed only the two that
-queued behind them. Under this change that shape collapses much further.
+same commit, and a parallel one cannot.
+
+**Measured on the first serialized build.** `#1017`'s trim line reads *"Trimmed:
+build #1016 already built 8952afa for this job and succeeded. Skipping the
+work."* Thirty-three minutes of work collapsed to five. Under the old parallel
+behaviour `#1017` would have started at 05:02 alongside `#1016`, checked out a
+different tip, seen a null result from a still-running predecessor, and done the
+full build, which is exactly the shape that produced the 2026-08-27 five-build
+burst. The queue went from 22 blocked plus 33 buildable (55 items) to 5 blocked
+plus 1 buildable (6), and load rose to 40 because the executors were doing work
+instead of waiting.
+
+**Serialization did not slow the lane down. It let the trim reach a build it
+structurally could not reach before.** That is the whole argument, and it is now
+measured rather than reasoned.
 
 ### The guard orders by BUILD, not by COMMIT
 
@@ -233,6 +256,44 @@ staging deploy behind an operator who wandered off. Instead the sync step
 re-reads the staging pointers inside the lock and fails loudly if they moved.
 Without it, a staging deploy landing during the gate would be shipped to
 **production** while Discord announced the approved version, green throughout.
+
+### What a first green does NOT prove
+
+`#1016` exercised the happy path on a real build and every mechanism fired: the
+flock was taken four times and
+`/opt/mechacorps/.locks/deploy-opt-mechacorps-main.lock` now exists,
+`--exclude latest.txt` was on both rsyncs, `.published-build` was created reading
+`1016`, the guard returned `published`, and **both** pointers moved together to
+`v0.2.1016/MCDServer` and `v1.0.1016/MCDTestClient`. That also took dev off
+`v0.2.1008`, where it had been pinned by a hand repair since 04:06Z.
+
+**None of that exercises the guards.** Stated plainly so a green build is not
+read as more than it is:
+
+- **The refusal path has never executed.** Nothing has yet tried to publish
+  behind a newer build, so the `mc-ehn1: REFUSING to move ...` marker is
+  unexercised in production. Its behaviour rests on the unit tests only.
+- **The lease gate has never engaged.** Dev reported `rooms:0` throughout, so no
+  `PAUSE`, `FORCED` or lease-cleared line has ever been emitted by a real deploy.
+
+A first green is evidence the happy path works. It is not evidence the guards
+bite.
+
+### A caveat this decision makes worse, tracked separately
+
+`#1016`'s `displayName` names `dde209a` while its own trim line records that it
+built `8952afa`. That is not a quirk of one build: `commit_sha` comes from the
+webhook payload (`$.after`, the tip at PUSH time) and feeds `displayName`,
+`BUILD_INFO.txt` and the deployed `manifest.json`, while what is actually checked
+out is the branch **tip at start time**, captured separately as `BUILT_COMMIT`.
+`mcdRedundantBuild`'s header states the divergence outright: *"a Jenkins branch
+build checks out the branch TIP, not the commit its webhook carried."*
+
+**Serializing widens that window**, because the divergence grows with queue time
+and `#1017` waited 34 minutes. So this decision aggravates a pre-existing
+mislabelling. Tracked as its own bead rather than fixed here; the pipeline
+already does it correctly in one place (`proxyCommit`, from `git rev-parse HEAD`,
+feeding the proxy provenance gate) and that is the shape of the fix.
 
 ## Consequences
 
