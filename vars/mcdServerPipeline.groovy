@@ -1140,9 +1140,86 @@ ENVEOF
                                 #
                                 # The build needs neither the port nor the container name,
                                 # so it is safe to run while the old proxy still serves.
-                                # This does NOT make a deploy safe for live matches: the
-                                # recreate below is still a hard cut. It removes only the
-                                # part of the outage that was pure ordering.
+                                # On its own this does NOT make a deploy safe for live
+                                # matches: the recreate below is still a hard cut. It
+                                # removed only the part of the outage that was pure
+                                # ordering. The lease gate directly below is what now
+                                # keeps that hard cut away from a live match.
+
+                                # THE LEASE GATE (mc-ic6h). The recreate below destroys the
+                                # proxy container, and because that container also SPAWNS
+                                # the game servers, it destroys every match running under
+                                # it. So it must not fire while a match is live.
+                                #
+                                # The .in-use lease is the SAME contract 'Cleanup Old
+                                # Versions' already honours further down (see
+                                # IN_USE_LEASE_MINUTES): the proxy touches
+                                # <version-dir>/.in-use while a match is running on that
+                                # version, and refreshes it every 5 minutes. Cleanup
+                                # consulted that marker before deleting. The teardown did
+                                # not consult it at all. That asymmetry is the bug: on
+                                # 2026-08-24 this stage tore the proxy down at 22:22:33
+                                # with a match live and killed game 753ec597 mid-play
+                                # (GH-2688 and GH-2687, both players, 41 seconds apart).
+                                #
+                                # THE BOUND IS TIM'S RULING, 2026-08-27: wait up to 15
+                                # minutes for the lease to clear, then tear down ANYWAY.
+                                # Each rejected option is rejected for a reason worth
+                                # keeping:
+                                #   5 min  too short. A long combat sequence needs longer.
+                                #   60 min equals IN_USE_LEASE_MINUTES, so a LEAKED lease
+                                #          could hold a deploy for a full hour.
+                                #   never  no ceiling at all: one leaked lease blocks every
+                                #          deploy until a human clears it by hand.
+                                # Do not quietly retune this to 5 as 'close enough'. 5 was
+                                # on the table and was not chosen.
+                                #
+                                # THE WAIT DELIBERATELY HAPPENS OUTSIDE ANY CROSS-JOB LOCK.
+                                # Waiting 15 minutes while holding the deploy-path flock
+                                # (mc-ehn1) would stall every other job keyed on that path,
+                                # a promote included, and turn a live-match protection into
+                                # a fleet-wide stall.
+                                #
+                                # KNOWN NARROW RACE, written down so this is not read as a
+                                # guarantee: a match can still start between the wait
+                                # clearing and the teardown running. This gate shrinks that
+                                # window from 'the whole deploy' to 'a few seconds'; it does
+                                # not close it. Closing it needs the proxy to refuse new
+                                # matches while a deploy is pending, which is proxy-side
+                                # and is not this change.
+                                #
+                                # Scoped to versions/ only, not testclient-versions/: the
+                                # lease contract is written by the proxy when a MATCH
+                                # starts, and only matches are destroyed by this teardown.
+                                PROXY_LEASE_WAIT_SECONDS=\${PROXY_LEASE_WAIT_SECONDS:-900}
+                                PROXY_LEASE_POLL_SECONDS=\${PROXY_LEASE_POLL_SECONDS:-15}
+                                PROXY_LEASE_MINUTES=\${PROXY_LEASE_MINUTES:-60}
+
+                                live_lease() {
+                                    find "${config.deployPath}/versions" -maxdepth 2 \\
+                                        -name .in-use -mmin -"\$PROXY_LEASE_MINUTES" \\
+                                        2>/dev/null | head -n 1
+                                }
+
+                                lease_holder=\$(live_lease)
+                                lease_waited=0
+                                if [ -n "\$lease_holder" ]; then
+                                    echo "PAUSE proxy teardown: a match is live on \$(dirname "\$lease_holder")"
+                                    echo "  waiting up to \${PROXY_LEASE_WAIT_SECONDS}s for its .in-use lease to clear"
+                                    while [ -n "\$lease_holder" ] && [ "\$lease_waited" -lt "\$PROXY_LEASE_WAIT_SECONDS" ]; do
+                                        sleep "\$PROXY_LEASE_POLL_SECONDS"
+                                        lease_waited=\$((lease_waited + PROXY_LEASE_POLL_SECONDS))
+                                        lease_holder=\$(live_lease)
+                                    done
+                                    if [ -n "\$lease_holder" ]; then
+                                        echo "FORCED proxy teardown after \${lease_waited}s of waiting."
+                                        echo "  \$(dirname "\$lease_holder") STILL held its .in-use lease."
+                                        echo "  A LIVE MATCH IS BEING DESTROYED BY THIS DEPLOY (mc-ic6h)."
+                                        echo "  The bound is PROXY_LEASE_WAIT_SECONDS=\${PROXY_LEASE_WAIT_SECONDS}s."
+                                    else
+                                        echo "OK lease cleared after \${lease_waited}s. Tearing down with no match live."
+                                    fi
+                                fi
                             """
                             // THE LOCK STARTS HERE, NOT ABOVE (mc-ehn1). The image
                             // build deliberately sits OUTSIDE it. Holding a
