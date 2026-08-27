@@ -74,15 +74,32 @@ def _src() -> str:
 
 
 def _stage_sh_body(stage: str) -> str:
-    """Return the first triple-quoted `sh` body inside the named stage."""
+    """Return the first triple-quoted shell body inside the named stage.
+
+    Two step forms carry a shell body in this pipeline, and this helper has to
+    see both:
+
+        sh \"\"\"...\"\"\"
+        mcdDeployLock(deployPath: config.deployPath, \"\"\"...\"\"\")
+
+    The second arrived with mc-ehn1, which put the deploy and the retention
+    sweep behind a cross-job flock. Matching only `sh` made every cleanup test
+    below fail to find its script, which is a far better outcome than the
+    alternative: had this helper fallen back to an empty body instead of
+    asserting, the lease guards would have gone green while checking nothing.
+    """
     src = _src()
     start = src.find(f"stage('{stage}')")
     assert start != -1, (
         f"no stage('{stage}') in mcdServerPipeline.groovy. If it was renamed, "
         "the mc-mhjd guards need to follow it."
     )
-    match = re.search(r'sh\s+"""(.*?)"""', src[start:], re.S)
-    assert match is not None, f"stage('{stage}') has no triple-quoted sh body"
+    match = re.search(r'(?:sh\s+|mcdDeployLock\([^"]*)"""(.*?)"""', src[start:], re.S)
+    assert match is not None, (
+        f"stage('{stage}') has no triple-quoted shell body reachable through "
+        "`sh` or `mcdDeployLock`. If a new step form was introduced, teach this "
+        "helper about it rather than letting the guards below run on nothing."
+    )
     return match.group(1)
 
 
