@@ -333,3 +333,82 @@ def test_console_shows_the_game_server_side(body: str) -> None:
         "The stage no longer tails the GameServer logs nested under $LOG_DIR. "
         "See mc-n37x."
     )
+
+
+# ---------------------------------------------------------------------------
+# MCD-PR-Main runs the same test and is the only job that can be re-fired
+# ---------------------------------------------------------------------------
+
+_PR_SRC = _VARS / "mcdPRValidationPipeline.groovy"
+
+
+@pytest.fixture(name="pr_body")
+def _pr_body() -> str:
+    return _stage_body(_src(_PR_SRC), _STAGE)
+
+
+def test_pr_validation_writes_its_logs_to_the_workspace(pr_body: str) -> None:
+    """MCD-PR-Main's integration logs are archivable (mc-n37x).
+
+    This job is the only one that runs the integration test WITHOUT also
+    deploying to development, so it is the only one a flake can be re-fired on
+    safely. While its logs lived in /tmp a failure there left nothing behind
+    once the console rotated.
+    """
+    assert "LOG_DIR=integration-logs" in pr_body, (
+        "MCD-PR-Main's Integration Test must write into the workspace. "
+        "See mc-n37x."
+    )
+    assert "/tmp/test_proxy_" not in pr_body, (
+        "The proxy log is back under /tmp on MCD-PR-Main, where Jenkins cannot "
+        "archive it. See mc-n37x."
+    )
+    assert "/tmp/test_client1_" not in pr_body and "/tmp/test_client2_" not in pr_body, (
+        "A client log is back under /tmp on MCD-PR-Main. See mc-n37x."
+    )
+
+
+def test_pr_validation_gets_the_real_proxy_log(pr_body: str) -> None:
+    """MCD-PR-Main passes --log-dir too (mc-n37x)."""
+    assert '--log-dir "$LOG_DIR"' in pr_body, (
+        "MCD-PR-Main's Integration Test no longer passes --log-dir to MCDProxy, "
+        "so its proxy log is empty by construction. See mc-n37x."
+    )
+
+
+def test_pr_validation_archives_and_scans(pr_body: str) -> None:
+    """A red MCD-PR-Main integration run explains itself (mc-n37x).
+
+    Both jobs run the identical test and hit the identical flake. Giving only
+    one of them the scan and the archive means half the failures still cost a
+    rerun.
+    """
+    assert "archiveArtifacts" in pr_body and "integration-logs/**" in pr_body, (
+        "MCD-PR-Main no longer archives its integration logs on failure. "
+        "See mc-n37x."
+    )
+    assert "allowEmptyArchive: true" in pr_body, (
+        "MCD-PR-Main's archive must set allowEmptyArchive: true so an early "
+        "failure reports its own cause. See mc-n37x."
+    )
+    assert "send channel full" in pr_body and "player write error" in pr_body, (
+        "MCD-PR-Main runs the same integration test as MCDServer-Main and hits "
+        "the same flake, so it needs the same disconnect scan. See mc-n37x."
+    )
+
+
+def test_pr_validation_negative_cites_its_source_too(pr_body: str) -> None:
+    """MCD-PR-Main's scan is self-citing as well (mc-n37x).
+
+    Both jobs run the identical integration test against the identical
+    binaries. A verdict that is trustworthy on one job and not the other is
+    worse than no verdict, because the reader has to remember which is which.
+    """
+    assert 'scanned $PROXY_LOG ($(wc -c < "$PROXY_LOG") bytes' in pr_body, (
+        "MCD-PR-Main's disconnect scan does not report the file it read. "
+        "See mc-n37x."
+    )
+    assert "SCAN DID NOT RUN" in pr_body, (
+        "MCD-PR-Main reports an empty proxy log as a negative result rather "
+        "than as a scan that could not run. See mc-n37x."
+    )
