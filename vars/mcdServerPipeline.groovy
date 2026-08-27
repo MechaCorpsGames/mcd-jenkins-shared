@@ -524,7 +524,7 @@ def call(Map config) {
                             # open fails. Without this flag the proxy's real log went to
                             # the workspace logs/ directory while this stage tailed,
                             # grepped and archived the empty shell redirect it had named
-                            # proxy.log — so the mc-n37x scan below printed
+                            # proxy.log, so the mc-n37x scan below printed
                             # "NOT confirmed" on every run whether the warning fired or
                             # not. Keep stdout under a different name; it is expected to
                             # be empty and is captured only to catch a startup crash that
