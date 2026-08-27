@@ -485,7 +485,7 @@ def call(Map config) {
                                     echo "  This is NOT a result and refutes nothing. MCDProxy writes its"
                                     echo "  log to <--log-dir>/proxy.log and nothing to stdout or stderr"
                                     echo "  (Src/Proxy/main.go:66 and :842-858). An empty file here means"
-                                    echo "  the proxy was not given --log-dir \"$LOG_DIR\", or it died before"
+                                    echo "  the proxy was not given --log-dir '$LOG_DIR', or it died before"
                                     echo "  logging was initialised. Files actually present:"
                                     find "$LOG_DIR" -type f -printf '    %10s bytes  %p\n' 2>/dev/null \
                                         | sort -k3 || echo "    (none)"

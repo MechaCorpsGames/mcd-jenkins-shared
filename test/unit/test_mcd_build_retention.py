@@ -187,10 +187,17 @@ def test_integration_capture_is_paired_with_retention() -> None:
     archiving keeps a console log with no logs behind it. If a future change
     drops the archive step, this file's premise is gone and someone should be
     told rather than left with tests that still pass.
+
+    The glob widened from 'integration-logs/*.log' to 'integration-logs/**'
+    when the proxy was given --log-dir, because the GameServer it spawns writes
+    a level down in integration-logs/<gameID>/. That is more files but barely
+    more bytes: a whole run measures about 1 MB locally, against the ~19 MB
+    apiece that MCDServer, MCDProxy and MCDTestClient already contribute to
+    this job's artifact footprint. The retention arithmetic is unchanged.
     """
     src = _src(_SERVER_SRC)
-    assert "integration-logs/*.log" in src, (
-        "The Integration Test stage no longer archives integration-logs/*.log. "
+    assert "integration-logs/**" in src, (
+        "The Integration Test stage no longer archives the integration logs. "
         "If that was deliberate, the retention reasoning in this file and in "
         "the buildDiscarder comment needs revisiting. See mc-n37x."
     )
