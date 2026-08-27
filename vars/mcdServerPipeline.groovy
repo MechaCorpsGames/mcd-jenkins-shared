@@ -429,6 +429,21 @@ def call(Map config) {
                                 echo "=== Proxy Log (last 20 lines) ==="
                                 tail -20 "$LOG_DIR/proxy.log" 2>/dev/null || echo "(no proxy log)"
                                 echo ""
+                                echo "=== Proxy stdout/stderr (expected empty, see the --log-dir note below) ==="
+                                tail -5 "$LOG_DIR/proxy-stdout.log" 2>/dev/null || echo "(none)"
+                                echo ""
+                                # The proxy passes the same --log-dir to every GameServer
+                                # it spawns (Src/Proxy/main.go:2610), so the server's own
+                                # account of the match lands under $LOG_DIR in
+                                # <gameID>/server-stdout.log and <gameID>/proxy/proxy.log,
+                                # NOT beside proxy.log. A non-recursive glob misses it.
+                                echo "=== Newest game-server logs under $LOG_DIR (last 40 lines each) ==="
+                                for f in $(find "$LOG_DIR" -mindepth 2 -name '*.log' -printf '%T@ %p\n' 2>/dev/null \
+                                           | sort -rn | head -3 | cut -d' ' -f2-); do
+                                    echo "--- $f ---"
+                                    tail -40 "$f"
+                                done
+                                echo ""
                                 echo "=== Client 1 Log (last 15 lines) ==="
                                 tail -15 "$LOG_DIR/client1.log" 2>/dev/null || echo "(no client1 log)"
                                 echo ""
@@ -436,32 +451,85 @@ def call(Map config) {
                                 tail -15 "$LOG_DIR/client2.log" 2>/dev/null || echo "(no client2 log)"
 
                                 # mc-n37x signature scan. The suspected cause is
-                                # Player.sendToPlayer in Src/Proxy/main.go: when a
-                                # player's 128-deep send channel fills, the proxy
-                                # closes that player's connection outright, which
-                                # presents to the peer as Connection_PlayerDisconnected
-                                # mid-match and then nobody reconnects. A starved
-                                # client on a loaded shared agent is exactly how the
-                                # channel fills. This scan turns the next failure into
-                                # a confirmation or a refutation instead of a rerun.
+                                # Player.sendToPlayer (Src/Proxy/main.go:602 on
+                                # MCDClient e548eaf14): when a player's 128-deep send
+                                # channel fills, the proxy closes that player's
+                                # connection outright, which presents to the peer as
+                                # Connection_PlayerDisconnected mid-match and then
+                                # nobody reconnects. The second candidate with the same
+                                # outward signature is writePump's 10-second write
+                                # deadline at :576, which logs "player write error"
+                                # instead, so the scan names both.
+                                #
+                                # EVERY VERDICT BELOW CITES THE FILE IT READ AND ITS
+                                # SIZE, and an empty or missing log is reported as "scan
+                                # did not run", never as a negative result. The first
+                                # version of this scan read a file that was empty by
+                                # construction and printed "hypothesis NOT confirmed by
+                                # this run" on every single failure. Nothing about that
+                                # output said which file it had read or that the file
+                                # held nothing, so it read as a refutation for two days.
+                                # An instrument that cannot see the thing it is aimed at
+                                # is a nuisance; one that reports not seeing it as
+                                # evidence of absence is worse. A negative that cites its
+                                # own source cannot rot that way again.
                                 echo ""
                                 echo "=== Proxy disconnect scan (mc-n37x) ==="
-                                if grep -n "send channel full" "$LOG_DIR/proxy.log" 2>/dev/null; then
-                                    echo "^^ CONFIRMS the mc-n37x hypothesis: the proxy dropped a player"
-                                    echo "   because its send channel filled, not because the client left."
+                                PROXY_LOG="$LOG_DIR/proxy.log"
+                                if [ ! -s "$PROXY_LOG" ]; then
+                                    if [ -e "$PROXY_LOG" ]; then
+                                        echo "SCAN DID NOT RUN: $PROXY_LOG exists but is empty (0 bytes)."
+                                    else
+                                        echo "SCAN DID NOT RUN: $PROXY_LOG does not exist."
+                                    fi
+                                    echo "  This is NOT a result and refutes nothing. MCDProxy writes its"
+                                    echo "  log to <--log-dir>/proxy.log and nothing to stdout or stderr"
+                                    echo "  (Src/Proxy/main.go:66 and :842-858). An empty file here means"
+                                    echo "  the proxy was not given --log-dir \"$LOG_DIR\", or it died before"
+                                    echo "  logging was initialised. Files actually present:"
+                                    find "$LOG_DIR" -type f -printf '    %10s bytes  %p\n' 2>/dev/null \
+                                        | sort -k3 || echo "    (none)"
                                 else
-                                    echo "(no 'send channel full' warning: mc-n37x hypothesis NOT confirmed by this run)"
+                                    echo "scanned $PROXY_LOG ($(wc -c < "$PROXY_LOG") bytes, $(wc -l < "$PROXY_LOG") lines)"
+                                    if grep -n "send channel full" "$PROXY_LOG" 2>/dev/null; then
+                                        echo "^^ CONFIRMS the mc-n37x hypothesis: the proxy dropped a player"
+                                        echo "   because its send channel filled, not because the client left."
+                                    elif grep -n "player write error" "$PROXY_LOG" 2>/dev/null; then
+                                        echo "^^ NOT the send-channel path, but the same outward signature:"
+                                        echo "   writePump hit a socket write error or its 10s write deadline"
+                                        echo "   and closed the connection (Src/Proxy/main.go:576)."
+                                    else
+                                        echo "NEITHER 'send channel full' NOR 'player write error' appears in"
+                                        echo "the $(wc -l < "$PROXY_LOG") lines of $PROXY_LOG scanned above."
+                                        echo "That is a real negative for BOTH proxy-side disconnect paths on"
+                                        echo "this run: whatever dropped the player, the proxy did not choose"
+                                        echo "to close the connection for either of those two reasons."
+                                    fi
+                                    echo "--- other disconnect/timeout lines ---"
+                                    grep -niE "disconnect|reconnect|write error|timeout" "$PROXY_LOG" 2>/dev/null | head -30 \
+                                        || echo "(none in $PROXY_LOG)"
                                 fi
-                                echo "--- other disconnect/timeout lines ---"
-                                grep -niE "disconnect|reconnect|write error|timeout" "$LOG_DIR/proxy.log" 2>/dev/null | head -30 \
-                                    || echo "(none)"
 
                                 kill $PROXY_PID 2>/dev/null || true
                                 kill $CLIENT1_PID $CLIENT2_PID 2>/dev/null || true
                             }
                             trap cleanup EXIT
 
-                            ./bin/MCDProxy -port $TEST_TCP_PORT -wsport $TEST_WS_PORT > "$LOG_DIR/proxy.log" 2>&1 &
+                            # --log-dir is what makes every tail, grep and archive
+                            # below read a file with something in it. MCDProxy writes
+                            # NOTHING to stdout or stderr: Src/Proxy/main.go:66 defaults
+                            # --log-dir to "logs", and main() at :842-858 opens
+                            # <log-dir>/proxy.log and points BOTH log.SetOutput and
+                            # slog.SetDefault at it, falling back to stderr only if that
+                            # open fails. Without this flag the proxy's real log went to
+                            # the workspace logs/ directory while this stage tailed,
+                            # grepped and archived the empty shell redirect it had named
+                            # proxy.log — so the mc-n37x scan below printed
+                            # "NOT confirmed" on every run whether the warning fired or
+                            # not. Keep stdout under a different name; it is expected to
+                            # be empty and is captured only to catch a startup crash that
+                            # happens before logging is initialised.
+                            ./bin/MCDProxy -port $TEST_TCP_PORT -wsport $TEST_WS_PORT --log-dir "$LOG_DIR" > "$LOG_DIR/proxy-stdout.log" 2>&1 &
                             PROXY_PID=$!
                             echo "Test proxy started on TCP:$TEST_TCP_PORT, WS:$TEST_WS_PORT (PID: $PROXY_PID)"
                             sleep 3
@@ -527,7 +595,12 @@ def call(Map config) {
                             // the disconnect scan above. Read the verdict there
                             // first; come here for the full logs only while the
                             // failing build is still recent.
-                            archiveArtifacts artifacts: 'integration-logs/*.log',
+                            // '**' not '*.log': the spawned GameServer's logs sit a
+                            // level down in integration-logs/<gameID>/ (server-stdout.log,
+                            // proxy/proxy.log) plus decisions.jsonl, and a flat glob
+                            // silently leaves the server's half of the disconnect behind.
+                            // A whole run is around 1 MB.
+                            archiveArtifacts artifacts: 'integration-logs/**',
                                              allowEmptyArchive: true,
                                              fingerprint: false
                             error("Integration test failed")

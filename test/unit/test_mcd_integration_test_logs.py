@@ -27,6 +27,16 @@ builds that ran alone).
 This file guards the capture, not the hypothesis. Whatever the cause turns out
 to be, the next failure has to leave enough behind to name it.
 
+THE CAPTURE WAS AIMED AT THE WRONG FILE FOR ITS FIRST TWO DAYS, which is why
+the assertions below now pin the --log-dir flag rather than only the redirect.
+MCDProxy writes nothing to stdout or stderr: Src/Proxy/main.go:66 defaults
+--log-dir to "logs", and main() at :820-838 opens <log-dir>/proxy.log and points
+both log.SetOutput and slog.SetDefault at it. So `> "$LOG_DIR/proxy.log"` created
+an empty file with the right name, the real log went to the workspace logs/
+directory, and the signature scan printed "NOT confirmed" on every run whether
+the warning had fired or not. A confident false refutation is worse than no scan
+at all, so the flag is now asserted directly.
+
 Run with: pytest test/unit/test_mcd_integration_test_logs.py
 No live Jenkins required. Tests parse Groovy source.
 """
@@ -132,8 +142,13 @@ def test_failure_archives_the_full_logs(body: str) -> None:
         "long before the 180s cap, and build logs rotate after 10 builds. "
         "See mc-n37x."
     )
-    assert "integration-logs/*.log" in body, (
-        "archiveArtifacts must cover the integration logs. See mc-n37x."
+    assert "integration-logs/**" in body, (
+        "archiveArtifacts must cover the integration logs RECURSIVELY. The "
+        "GameServer the proxy spawns writes under integration-logs/<gameID>/ "
+        "(server-stdout.log, proxy/proxy.log), because the proxy hands it the "
+        "same --log-dir (Src/Proxy/main.go:2428). A flat '*.log' glob archives "
+        "the client and proxy logs and silently drops the server's half of the "
+        "disconnect. See mc-n37x."
     )
 
 
@@ -187,10 +202,134 @@ def test_scan_reports_absence_as_well_as_presence(body: str) -> None:
     """A clean scan says so out loud (mc-n37x).
 
     A grep that prints nothing when it matches nothing is indistinguishable
-    from a grep that did not run. Saying "NOT confirmed" keeps the next reader
-    from assuming the check was skipped.
+    from a grep that did not run. The original wording here was the bare
+    "hypothesis NOT confirmed by this run", which solved that problem and
+    created a worse one: it said the same thing whether the log held a
+    thousand lines with no match or nothing at all. The scan now states the
+    line count it searched, so absence is attributable.
     """
-    assert "NOT confirmed" in body, (
+    assert "NEITHER 'send channel full' NOR 'player write error' appears in" in body, (
         "The signature scan must state explicitly when it finds nothing, so a "
         "silent scan is never mistaken for a missing one. See mc-n37x."
+    )
+
+
+def test_a_negative_cites_the_file_it_read(body: str) -> None:
+    """Every verdict names its source and its size (mc-n37x).
+
+    This is the durable half of the fix, and the half that matters more than
+    the path. The first version of this scan grepped a file that was empty by
+    construction and printed "mc-n37x hypothesis NOT confirmed by this run" on
+    every failing build. Nothing in that line said which file had been read or
+    that it held nothing, so for two days it read as a refutation of a live
+    hypothesis, on evidence that did not exist. Aiming the grep at the right
+    path fixes today's bug; making the verdict cite its own source is what
+    stops the next one from being believed.
+    """
+    assert 'scanned $PROXY_LOG ($(wc -c < "$PROXY_LOG") bytes' in body, (
+        "The scan no longer reports the file it read and its size, so its "
+        "verdict cannot be told apart from a verdict on an empty file. "
+        "See mc-n37x."
+    )
+
+
+def test_an_empty_log_is_not_reported_as_a_negative(body: str) -> None:
+    """An empty or missing proxy log says "scan did not run" (mc-n37x).
+
+    A scan whose input is empty has not refuted anything, and must not be
+    allowed to sound like it has. It also has to say what it DID find on disk,
+    because "the file I expected is empty" plus a listing of the files that are
+    not is the whole diagnosis of how the scan got pointed at the wrong path.
+    """
+    assert "SCAN DID NOT RUN" in body, (
+        "An empty or missing proxy log is being reported as a scan result "
+        "again. It is not one: it means the scan could not see its subject. "
+        "See mc-n37x."
+    )
+    assert 'if [ ! -s "$PROXY_LOG" ]; then' in body, (
+        "The scan no longer checks that its input is non-empty before drawing "
+        "a conclusion from it. See mc-n37x."
+    )
+    assert 'find "$LOG_DIR" -type f' in body, (
+        "When the proxy log is empty the scan must list the files that DO "
+        "exist, which is what identifies a misdirected log path. See mc-n37x."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The scan has to read the file the proxy actually writes
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_is_told_where_to_write_its_log(body: str) -> None:
+    """The proxy is launched with --log-dir "$LOG_DIR" (mc-n37x).
+
+    This is the assertion that would have caught the two days the capture spent
+    aimed at an empty file. MCDProxy never writes to stdout or stderr:
+    Src/Proxy/main.go:66 defaults --log-dir to "logs", and main() at :820-838
+    opens <log-dir>/proxy.log and points both log.SetOutput and slog.SetDefault
+    at it, falling back to stderr only if that open fails. Without the flag the
+    shell redirect below produces a correctly named empty file while the real
+    log lands in the workspace logs/ directory, so the tail, the grep and the
+    archive all read nothing.
+    """
+    assert '--log-dir "$LOG_DIR"' in body, (
+        "The Integration Test stage no longer passes --log-dir to MCDProxy. "
+        "Without it the proxy writes its log to the workspace logs/ directory "
+        "and every tail, grep and archive in this stage reads an empty file. "
+        "See mc-n37x."
+    )
+
+
+def test_stdout_redirect_does_not_shadow_the_real_log(body: str) -> None:
+    """The shell redirect uses its own name, not proxy.log (mc-n37x).
+
+    Redirecting the proxy's (empty) stdout to $LOG_DIR/proxy.log truncates the
+    file the proxy is about to write, so the two capture paths fight over one
+    name and the empty one wins. Keep the stdout capture -- it is the only thing
+    that survives a crash before logging is initialised -- but under a name of
+    its own.
+    """
+    assert '> "$LOG_DIR/proxy-stdout.log"' in body, (
+        "The proxy's stdout must be captured under its own name so it cannot "
+        "truncate the log the proxy writes itself. See mc-n37x."
+    )
+    assert '> "$LOG_DIR/proxy.log"' not in body, (
+        "The shell redirect is pointed at $LOG_DIR/proxy.log again. That is the "
+        "file MCDProxy opens and writes itself, so the redirect creates an "
+        "empty file with the right name and the scan reports a confident false "
+        "refutation. See mc-n37x."
+    )
+
+
+def test_scan_names_the_write_deadline_path_too(body: str) -> None:
+    """The scan distinguishes the two proxy paths with the same signature (mc-n37x).
+
+    Two places in Src/Proxy/main.go close a live player's connection and present
+    to the peer as Connection_PlayerDisconnected mid-match: sendToPlayer when the
+    128-deep send channel fills ("send channel full"), and writePump when a
+    socket write fails or its 10-second write deadline expires ("player write
+    error"). A scan that names only the first reports "NOT confirmed" for a
+    failure the second one caused, which reads as a refutation and is not one.
+    """
+    assert "player write error" in body, (
+        "The disconnect scan no longer distinguishes writePump's write-deadline "
+        "path from sendToPlayer's send-channel path. Both produce the same "
+        "outward signature, so a scan for one of them cannot refute the other. "
+        "See mc-n37x."
+    )
+
+
+def test_console_shows_the_game_server_side(body: str) -> None:
+    """The spawned GameServer's logs are tailed too (mc-n37x).
+
+    The proxy passes the same --log-dir to every GameServer it starts
+    (Src/Proxy/main.go:2428), so the server's account of the match lands one
+    level down in <gameID>/. A non-recursive listing of the log directory never
+    sees it, and the server is the only party that knows what it had just sent
+    when the socket went away.
+    """
+    assert 'find "$LOG_DIR" -mindepth 2' in body, (
+        "The stage no longer tails the GameServer logs nested under $LOG_DIR. "
+        "See mc-n37x."
     )
