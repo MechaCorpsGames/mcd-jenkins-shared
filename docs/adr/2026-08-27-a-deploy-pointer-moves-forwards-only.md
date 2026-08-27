@@ -93,6 +93,34 @@ still republish, which is how an operator repairs a bad pointer without editing
 files by hand. Absent or corrupt state fails **open** and publishes, the same
 direction as `mcdRedundantBuild`.
 
+### The guard orders by BUILD, not by COMMIT
+
+**This is a real limit and it is deliberate. Read "monotonic" as "the pointer
+never moves to a lower build number", not as "the pointer never moves to older
+code".** They are the same thing for the race this ADR exists to fix and they
+come apart in one case.
+
+The case: a **manual rebuild of an older commit**. Jenkins hands it a higher
+build number than everything before it, so the guard sees a forward move and
+allows it, and the older code becomes current. The paragraph above notes the
+benign half of that (a manual re-run is never *blocked*); this is the other half
+of the same fact.
+
+It is out of scope on purpose, for three reasons:
+
+1. It is not the observed defect. The 2026-08-27 incident was #1006 overwriting
+   #1008 with a *lower* number, which build ordering rejects exactly.
+2. Ancestry (`git merge-base --is-ancestor`) drags git into the deploy step, and
+   on a force-pushed branch it asks a question with no reliable answer. The
+   deploy step currently needs no repository at all.
+3. An operator who deliberately rebuilds an old commit and deploys it is usually
+   asking for precisely that. Refusing it would break the rollback path.
+
+So the guard protects against a **race**, not against an operator. If a future
+change needs the stronger property, it needs commit ancestry and it needs an
+answer for the force-push case; do not reach for it by tightening `-lt`, which
+cannot express it.
+
 A refusal keeps the build **green** and changes what Discord says. Being
 superseded is the mechanism working, not a failure; but the payload having
 deployed while `latest.txt` points at a newer build is not "Deployed Server
