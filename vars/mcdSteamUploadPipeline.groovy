@@ -149,8 +149,15 @@ def call(Map config) {
                         // pipeline's 'Generate Compatibility Manifest' stage, so nothing new
                         // is computed here. Empty if an older source build predates that
                         // stage; the signal stage refuses to write a signal it cannot fill in.
+                        // `| head -1` because grep -oP prints one line PER MATCH, and this
+                        // value is interpolated UNQUOTED into the signal's JSON below. Two
+                        // protocolVersion keys in the manifest would make this "54\n54", the
+                        // non-empty guard would pass, and the heredoc would emit
+                        // `"protocolVersion": 54<newline>54,` -- a signal file that no reader
+                        // can parse. head -1 keeps the exit status of the pipeline at head's,
+                        // which is 0 on empty input, so the `|| true` tolerance is unchanged.
                         env.CLIENT_PROTOCOL_VERSION = sh(
-                            script: "grep -oP '\"protocolVersion\"\\s*:\\s*\\K[0-9]+' ${manifestPath} || true",
+                            script: "grep -oP '\"protocolVersion\"\\s*:\\s*\\K[0-9]+' ${manifestPath} | head -1 || true",
                             returnStdout: true
                         ).trim()
 
