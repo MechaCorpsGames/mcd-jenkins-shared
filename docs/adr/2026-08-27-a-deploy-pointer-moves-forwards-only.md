@@ -129,6 +129,48 @@ still republish, which is how an operator repairs a bad pointer without editing
 files by hand. Absent or corrupt state fails **open** and publishes, the same
 direction as `mcdRedundantBuild`.
 
+### The guard does not take effect on the build that introduces it
+
+**Read this before concluding the fix did not work.** Declarative pipeline
+options are applied by the RUNNING build, so a job's recorded properties do not
+carry `disableConcurrentBuilds()` until a build containing it has executed. The
+build that merges this change is the one that INSTALLS the property; **the first
+build that actually blocks is the one after it.**
+
+Observed on the master by the mayor at 05:07Z, minutes after `#113` merged at
+~04:57Z: `MCDServer-Main` `#1014` (started 04:40), `#1015` (04:56) and `#1016`
+(05:02) were all running concurrently, and `#1016` started five minutes *after*
+the fix was on `main` and did not block. That is the expected one-build lag, not
+a failure.
+
+Written down because the misreading is cheap and the consequence is expensive:
+someone merges this, sees three concurrent builds a minute later, concludes it
+did not work, and reverts a working fix.
+
+**The falsifier, stated so it cannot be quietly skipped:** `#1017` onward should
+serialize. If a build *after* the installing one still runs concurrently with
+another, this explanation is wrong and there is a real defect. At the time of
+writing that had not yet been observed either way.
+
+### Fewer builds is the binding constraint, so this is a throughput fix too
+
+The correctness argument above stands on its own, but the throughput case is
+measurable and is the stronger one on a saturated controller.
+
+Measured on CoolJerk by the mayor at 05:09Z: 16 cores, load average 23.08 /
+25.59 / 26.74, **4 executors** with 4 build agents running, so the box is already
+over-subscribed at its current executor count and raising executors would make it
+worse. Queue depth at that moment was 28 blocked plus 32 buildable, 60 items on
+those 4 executors, with thirteen open PRs all sitting at `jenkins/pr-validation`
+PENDING.
+
+When the binding constraint is CPU on one box, the only lever that helps is
+**fewer builds**. Serialization delivers exactly that, by the mechanism the
+section above describes: a queued build can see a finished predecessor on the
+same commit, and a parallel one cannot. Tonight's burst ran three full
+twenty-minute builds on three different commits and trimmed only the two that
+queued behind them. Under this change that shape collapses much further.
+
 ### The guard orders by BUILD, not by COMMIT
 
 **This is a real limit and it is deliberate. Read "monotonic" as "the pointer
