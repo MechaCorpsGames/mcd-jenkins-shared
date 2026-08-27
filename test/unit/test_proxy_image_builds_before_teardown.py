@@ -66,6 +66,48 @@ def _sh_blocks(src: str) -> list[str]:
     return parts[1::2]
 
 
+def _stage_blocks(src: str) -> list[tuple[str, str]]:
+    """Group triple-quoted bodies by the `stage('...')` they sit in.
+
+    WHY THIS EXISTS, AND WHY THE UNIT IS NOW THE STAGE (mc-ehn1).
+
+    The invariant here is an ORDER between two commands, and until 2026-08-27
+    both sat in one `sh` block, so a per-block scan could see it. mc-ehn1 then
+    put the non-idempotent half of the proxy deploy behind a cross-job flock:
+
+        sh \"\"\"  ...docker build...  \"\"\"                     <- outside the lock
+        mcdDeployLock(deployPath: ..., \"\"\"  ...docker rm -f...  \"\"\")
+
+    The build is deliberately left OUTSIDE the lock, because holding a
+    cross-job mutex across a --no-cache image build would pin it for minutes
+    and protect nothing. The two commands therefore now live in two adjacent
+    blocks that still execute in source order.
+
+    A per-block scan sees a block that builds and never removes, and a block
+    that removes and never builds, so NEITHER is in scope and the check
+    silently stops checking. That is the failure this grouping prevents: the
+    ordering is still real, so the test must still be able to see it.
+
+    Concatenating per stage is also strictly stronger than the old per-block
+    check, because it now catches a reordering that moves the build AFTER the
+    lock as well as one that reorders within a single block.
+    """
+    stages: list[tuple[str, str]] = []
+    for match in re.finditer(r"stage\('([^']+)'\)\s*\{", src):
+        name = match.group(1)
+        depth, i = 0, match.end() - 1
+        while i < len(src):
+            if src[i] == "{":
+                depth += 1
+            elif src[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        stages.append((name, src[match.start():i]))
+    return stages
+
+
 def _strip_sh_comments(block: str) -> list[str]:
     """Drop whole-line `#` comments from a shell block, keeping line order.
 
@@ -95,16 +137,18 @@ def _first_index(lines: list[str], pattern: re.Pattern) -> int:
 
 @pytest.mark.parametrize("path", _pipeline_files(), ids=lambda p: p.name)
 def test_image_is_built_before_the_serving_container_is_removed(path: Path) -> None:
-    """Any block that both builds an image and removes the serving proxy builds first."""
-    blocks = _sh_blocks(path.read_text())
-
+    """Any STAGE that both builds an image and removes the serving proxy builds first."""
     checked = 0
-    for n, block in enumerate(blocks):
-        lines = _strip_sh_comments(block)
+    for n, block in _stage_blocks(path.read_text()):
+        # Every shell body in the stage, concatenated in source order, which is
+        # the order Jenkins runs them in.
+        lines = []
+        for body in _sh_blocks(block):
+            lines.extend(_strip_sh_comments(body))
         rm_at = _first_index(lines, _RM_SERVING)
         build_at = _first_index(lines, _DOCKER_BUILD)
 
-        # Only blocks that do BOTH are in scope. The "container not running,
+        # Only stages that do BOTH are in scope. The "container not running,
         # starting..." branch removes a stale name without building, and has
         # no live match to protect, so it is correctly exempt.
         if rm_at == -1 or build_at == -1:
@@ -112,7 +156,7 @@ def test_image_is_built_before_the_serving_container_is_removed(path: Path) -> N
 
         checked += 1
         assert build_at < rm_at, (
-            f"{path.name}: shell block {n} removes the serving proxy container "
+            f"{path.name}: stage '{n}' removes the serving proxy container "
             f"(line {rm_at} of the block) BEFORE building its replacement image "
             f"(line {build_at}). That leaves nothing serving for the length of a "
             f"--no-cache image build, which on MCDServer-Main #958 was ten seconds "

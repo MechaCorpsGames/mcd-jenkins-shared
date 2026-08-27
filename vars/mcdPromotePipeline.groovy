@@ -39,6 +39,15 @@ def call(Map config) {
         options {
             timestamps()
             buildDiscarder(logRotator(numToKeepStr: '50'))
+
+            // This job SHIPS PRODUCTION out of a directory another job writes
+            // (bead mc-ehn1). Two promotes running at once would rsync the same
+            // staging tree into the same prod tree and recreate the same prod
+            // proxy container, and the second `up -d --force-recreate` can land
+            // on a container the first has just removed. Bare, never
+            // abortPrevious: aborting mid-rsync is what leaves the half-written
+            // prod tree these controls exist to prevent.
+            disableConcurrentBuilds()
         }
 
         stages {
@@ -142,8 +151,49 @@ def call(Map config) {
 
             stage('Sync Binaries → Prod') {
                 steps {
-                    sh """
+                    // LOCKED ON THE STAGING PATH, NOT THE PROD PATH (bead mc-ehn1).
+                    // The contended directory is the SOURCE: MCDServer-Release-
+                    // Staging writes /opt/mechacorps/release-staging (its deploy and
+                    // its retention sweep both do) while this job reads it to build
+                    // production. Nothing else writes prodDeployPath, so keying the
+                    // lock there would exclude nobody. Both parties take the
+                    // staging-path key via mcdDeployLock, which is the only reason
+                    // this excludes anything at all.
+                    //
+                    // The lock deliberately does NOT span 'Confirm Promote'. That
+                    // stage blocks on a human, potentially for hours, and a
+                    // cross-job mutex held across an input gate would wedge every
+                    // staging deploy behind an operator who wandered off. The
+                    // re-verification below is what covers that window instead.
+                    mcdDeployLock(deployPath: config.stagingDeployPath, """
                         set -e
+
+                        # RE-VERIFY WHAT THE OPERATOR ACTUALLY APPROVED (mc-ehn1).
+                        # 'Validate Staging Artifacts' read these two pointers, and
+                        # 'Confirm Promote' then showed that version to a human and
+                        # waited. In between, MCDServer-Release-Staging can publish a
+                        # NEW version onto this same path. Without this check the
+                        # rsync below would ship whatever is on staging NOW, while
+                        # the post{success} Discord message announces the version the
+                        # operator confirmed. That is a silent wrong PRODUCTION
+                        # deploy: the build stays green, and the only symptom is that
+                        # prod is running something nobody approved.
+                        #
+                        # Fail loudly instead. Re-running the job re-validates and
+                        # re-asks, which is the correct recovery.
+                        current_server=\$(cat ${config.stagingDeployPath}/versions/latest.txt)
+                        current_testclient=\$(cat ${config.stagingDeployPath}/testclient-versions/latest.txt)
+                        if [ "\$current_server" != "${env.STAGING_SERVER_VERSION}" ] || \\
+                           [ "\$current_testclient" != "${env.STAGING_TESTCLIENT_VERSION}" ]; then
+                            echo "✗ REFUSING TO PROMOTE: staging moved while waiting for confirmation." >&2
+                            echo "  confirmed GameServer: ${env.STAGING_SERVER_VERSION}" >&2
+                            echo "  staging now:          \$current_server" >&2
+                            echo "  confirmed TestClient: ${env.STAGING_TESTCLIENT_VERSION}" >&2
+                            echo "  staging now:          \$current_testclient" >&2
+                            echo "  A staging deploy landed between validation and promote. Re-run this job to validate and confirm the new build." >&2
+                            exit 1
+                        fi
+
                         mkdir -p ${config.prodDeployPath}/versions ${config.prodDeployPath}/testclient-versions ${config.prodDeployPath}/bots
                         # --delete on bots so removed practice bots don't linger;
                         # versions/ are append-only so no --delete there (preserve
@@ -163,7 +213,7 @@ def call(Map config) {
                         fi
                         echo "✓ Promoted GameServer:  \$(cat ${config.prodDeployPath}/versions/latest.txt)"
                         echo "✓ Promoted TestClient:  \$(cat ${config.prodDeployPath}/testclient-versions/latest.txt)"
-                    """
+                    """)
                 }
             }
 

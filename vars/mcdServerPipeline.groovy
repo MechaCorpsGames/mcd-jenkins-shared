@@ -45,6 +45,32 @@ def call(Map config) {
             // disk on that agent could not be measured from here. That half is
             // tracked separately rather than guessed at.
             buildDiscarder(logRotator(numToKeepStr: '60', artifactDaysToKeepStr: '7', artifactNumToKeepStr: '10'))
+
+            // SERIALIZE THIS JOB AGAINST ITSELF (bead mc-ehn1).
+            //
+            // This option was missing until 2026-08-27, and the 'Trim to Latest'
+            // comment below asserted it was already here, which is how it stayed
+            // missing. What that cost, on MCDServer-Main, 03:46-03:47Z that night:
+            // five builds started inside 60 seconds, #1006/#1007/#1008 ran the full
+            // pipeline CONCURRENTLY in workspaces MCDServer-Main, @2 and @3, and
+            // they finished out of order. #1006 was building ef5b60f06, two commits
+            // BEHIND #1008's 066852d43, and it wrote versions/latest.txt 548ms
+            // later. The proxy reads that file to choose the binary it spawns, so
+            // dev.mechacorpsgames.com served two-commit-stale code until a human
+            // repointed it by hand. The same overlap also removed #1006's proxy
+            // container between compose resolving it and compose recreating it, so
+            // a deploy that actually WORKED reported FAILURE and took 'Cleanup Old
+            // Versions' down with it.
+            //
+            // Bare, never abortPrevious: aborting has no stage scoping and would
+            // interrupt the publishing rsync in 'Deploy GameServer & TestClient'.
+            // That exclusion is pinned by
+            // test_mcd_superseded_build_cancellation.py::test_publishing_pipelines_never_abort_mid_rsync.
+            //
+            // Queueing rather than killing is also what makes 'Trim to Latest'
+            // work at all here: see the stage comment for why the trim could not
+            // fire while this job ran its bursts in parallel.
+            disableConcurrentBuilds()
         }
 
         environment {
@@ -216,6 +242,23 @@ def call(Map config) {
             // down by clearing the same flags 'Detect Changes' clears when a push
             // touches nothing here, which routes the build down the no-op path
             // this pipeline already takes several times a day.
+            //
+            // THAT PARAGRAPH WAS FALSE FOR THIS FILE UNTIL 2026-08-27, and the
+            // consequence is worth keeping written down (mc-ehn1). It describes
+            // the mechanism's precondition, queued builds all landing on the same
+            // branch tip, as though this pipeline satisfied it. It did not:
+            // options{} carried no disableConcurrentBuilds() at all, the only
+            // mention of it in this file was this comment, and so bursts here ran
+            // in PARALLEL. Parallel builds each check out the tip at the moment
+            // THEY run, which during a burst is a different commit per build
+            // (#1006 got ef5b60f06 while #1008 got 066852d43). mcdRedundantBuild
+            // skips only on a commit an earlier build ALREADY finished, so with
+            // every build on a different commit it could never match, and the trim
+            // was structurally unable to fire in exactly the bursts it exists for.
+            //
+            // The option is now present, so the paragraph above is true and the
+            // trim does what it says. Do not remove the option without deleting
+            // this stage: on its own it is inert here.
             //
             // It only ever skips a commit an EARLIER build of this job already
             // built and succeeded on, so it cannot strand a deploy: see
@@ -830,8 +873,19 @@ EOF
                         echo "✓ Protocol manifest: protocol \${PROTOCOL_VERSION} written to \${SERVER_VERSION_DIR}/protocol.txt and \${TESTCLIENT_VERSION_DIR}/protocol.txt"
 
                         mkdir -p ${config.deployPath}/versions ${config.deployPath}/testclient-versions ${config.deployPath}/Data/GameData
-                        rsync -rlvz --no-group bin/versions/ ${config.deployPath}/versions/
-                        rsync -rlvz --no-group bin/testclient-versions/ ${config.deployPath}/testclient-versions/
+                        # --exclude latest.txt IS THE RACE FIX (mc-ehn1). Everything
+                        # else in these directories is purely ADDITIVE: each build
+                        # writes its own v<x>.<y>.<build>/ subtree and never touches
+                        # another build's, so the payload rsyncs need no lock. The
+                        # single shared, mutable, last-writer-wins byte in the whole
+                        # deploy is latest.txt, the pointer the proxy reads to choose
+                        # which binary to spawn. Carried inside the synced directory
+                        # it was published by whichever build's rsync finished last,
+                        # which on 2026-08-27 was a build two commits behind. It is
+                        # now published separately, under a lock, and only forwards:
+                        # see the guarded step below.
+                        rsync -rlvz --no-group --exclude latest.txt bin/versions/ ${config.deployPath}/versions/
+                        rsync -rlvz --no-group --exclude latest.txt bin/testclient-versions/ ${config.deployPath}/testclient-versions/
                         # MCDServer auto-detects its data dir as <binary-parent-2>/Data/GameData/Cards;
                         # the deployed binary at versions/v.../MCDServer resolves to ${config.deployPath}/Data/GameData/Cards.
                         # Without the rsync the server falls back to the compile-time path (the Jenkins
@@ -843,9 +897,80 @@ EOF
                         else \
                           echo "ℹ Data/GameData/ not present in workspace — skipping (release-branch path)"; \
                         fi
-                        echo "✓ Deployed GameServer to ${config.environment}: \$(cat ${config.deployPath}/versions/latest.txt)"
-                        echo "✓ Deployed TestClient to ${config.environment}: \$(cat ${config.deployPath}/testclient-versions/latest.txt)"
                     """
+                    // PUBLISH THE TWO POINTERS TOGETHER, UNDER A LOCK, AND ONLY
+                    // FORWARDS (mc-ehn1). Serializing this write is necessary but
+                    // NOT sufficient: a lock alone still lets an older build take
+                    // its turn second and politely overwrite a newer one, which is
+                    // precisely what happened on 2026-08-27 (#1006 published 548ms
+                    // after #1008 and was two commits behind). So the write also
+                    // refuses to move backwards.
+                    //
+                    // KEYED ON BUILD NUMBER, not on the version string. Jenkins
+                    // build numbers within a job are monotonically increasing and
+                    // never reused, so "refuse a lower number" rejects exactly the
+                    // slow-older-build case and can never reject a legitimately
+                    // newer one. A manual re-run always carries a HIGHER number
+                    // than everything before it, so the operator case that
+                    // mcdRedundantBuild deliberately exempts is not blocked here
+                    // either. Version strings could not do this job: they are
+                    // per-branch and would compare across release lines.
+                    //
+                    // -lt rather than -le on purpose: a Replay of the SAME build
+                    // number must still be able to republish, which is how an
+                    // operator repairs a bad pointer without editing files by hand.
+                    //
+                    // FAILS OPEN when .published-build is absent or unreadable,
+                    // which is every deploy path on the first run after this lands.
+                    // Same direction as mcdRedundantBuild: an unknown previous
+                    // state means publish, never means silently skip a deploy.
+                    script {
+                        env.POINTER_VERDICT = mcdDeployLock(deployPath: config.deployPath, returnStdout: true, """
+            this_build="\${BUILD_NUMBER:-}"
+            case "\$this_build" in
+                ''|*[!0-9]*)
+                    echo "mc-ehn1: BUILD_NUMBER is '\$this_build', not a number. Refusing to publish a pointer that cannot be ordered." >&2
+                    exit 1
+                    ;;
+            esac
+
+            previous=\$(cat "${config.deployPath}/.published-build" 2>/dev/null || echo 0)
+            case "\$previous" in ''|*[!0-9]*) previous=0 ;; esac
+
+            if [ "\$this_build" -lt "\$previous" ]; then
+                echo "mc-ehn1: REFUSING to move ${config.deployPath} backwards. This build is #\$this_build; #\$previous already published and is newer. Leaving latest.txt untouched." >&2
+                echo refused
+                exit 0
+            fi
+
+            # Both copies land BEFORE either rename. A missing or unreadable
+            # source then aborts while the live pointers are still intact,
+            # rather than after one of the two has already moved.
+            cp bin/versions/latest.txt "${config.deployPath}/versions/.latest.txt.new"
+            cp bin/testclient-versions/latest.txt "${config.deployPath}/testclient-versions/.latest.txt.new"
+            mv "${config.deployPath}/versions/.latest.txt.new" "${config.deployPath}/versions/latest.txt"
+            mv "${config.deployPath}/testclient-versions/.latest.txt.new" "${config.deployPath}/testclient-versions/latest.txt"
+            echo "\$this_build" > "${config.deployPath}/.published-build"
+            echo published
+                        """)
+
+                        // Honest about what this does and does not guarantee: a
+                        // crash BETWEEN the two mv's still leaves the server and
+                        // testclient pointers split. What changed is the size of
+                        // that window, from the span of two full rsyncs to the span
+                        // of two renames with no I/O between them. On a POSIX
+                        // filesystem with no transaction across two files, that is
+                        // the floor; claiming the pointers are atomic together
+                        // would be a lie written into a comment.
+                        if (env.POINTER_VERDICT == 'refused') {
+                            echo "⚠ Pointer NOT published for ${config.environment}: a newer build already published. " +
+                                 "The version payload for this build was still deployed and remains available; " +
+                                 "only latest.txt was left pointing at the newer build. This is the mc-ehn1 guard working."
+                        } else {
+                            echo "✓ Deployed GameServer to ${config.environment}: " + sh(script: "cat ${config.deployPath}/versions/latest.txt", returnStdout: true).trim()
+                            echo "✓ Deployed TestClient to ${config.environment}: " + sh(script: "cat ${config.deployPath}/testclient-versions/latest.txt", returnStdout: true).trim()
+                        }
+                    }
                 }
             }
 
@@ -1018,7 +1143,36 @@ ENVEOF
                                 # This does NOT make a deploy safe for live matches: the
                                 # recreate below is still a hard cut. It removes only the
                                 # part of the outage that was pure ordering.
-
+                            """
+                            // THE LOCK STARTS HERE, NOT ABOVE (mc-ehn1). The image
+                            // build deliberately sits OUTSIDE it. Holding a
+                            // cross-job mutex across a --no-cache image build would
+                            // pin the lock for minutes and buy nothing, because the
+                            // build touches neither the container name nor the port
+                            // (the mc-ic6h comment above is why it runs first, and
+                            // that ordering is load-bearing).
+                            //
+                            // What IS inside is the region that is not idempotent
+                            // under concurrency: the port-holder sweep, the
+                            // `docker rm -f`, the `compose up --force-recreate`, the
+                            // Up check, the provenance gate and the marker write.
+                            // On 2026-08-27 MCDServer-Main #1006 died in exactly
+                            // that window: a concurrent build removed the container
+                            // between compose resolving it and compose recreating
+                            // it, and compose exited on "No such container:
+                            // 0007b334f1c9...". The deploy had in fact WORKED (the
+                            // container that invocation created was serving and
+                            // reporting rooms:0), but the stage went red and took
+                            // 'Cleanup Old Versions' down with it as collateral.
+                            //
+                            // disableConcurrentBuilds() alone already makes that
+                            // exact sequence impossible, because #1006 and #1008
+                            // can no longer run at the same time. The lock covers
+                            // the case the option cannot reach: a DIFFERENT job on
+                            // the same deploy path. Today that pair is
+                            // MCDServer-Release-Staging and MCDServer-Release-
+                            // Promote, both on /opt/mechacorps/release-staging.
+                            mcdDeployLock(deployPath: config.deployPath, """
                                 # Stop systemd proxy service and legacy containers holding our ports
                                 sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
                                 sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
@@ -1075,10 +1229,18 @@ ENVEOF
                                     docker logs ${containerName} --tail 20 2>&1 || true
                                     exit 1
                                 fi
-                            """
+                            """)
                             env.PROXY_DEPLOYED = "true"
                         } else {
-                            sh """
+                            // Same lock as the changed-proxy branch above (mc-ehn1).
+                            // This path is reached when the proxy itself did not
+                            // change but the container is not running, and it does
+                            // the same non-idempotent `docker rm -f` followed by a
+                            // `compose up` against the same globally-named container
+                            // and the same shared Src tree. An unlocked recovery
+                            // path racing a locked deploy path is not serialized at
+                            // all, so both branches have to take it.
+                            mcdDeployLock(deployPath: config.deployPath, """
                                 if ! docker ps --filter 'name=${containerName}' --format '{{.Status}}' | grep -q 'Up'; then
                                     echo "Proxy container not running, starting..."
 
@@ -1103,7 +1265,7 @@ ENVEOF
                                 else
                                     echo "✓ Proxy unchanged and container already running"
                                 fi
-                            """
+                            """)
                             env.PROXY_DEPLOYED = "false"
                         }
                     }
@@ -1113,7 +1275,13 @@ ENVEOF
             stage('Cleanup Old Versions') {
                 when { expression { env.SERVER_CHANGED == 'true' } }
                 steps {
-                    sh """
+                    // LOCKED for the same reason the deploy is (mc-ehn1). This stage
+                    // rm -rf's version directories out of the very tree that
+                    // MCDServer-Release-Promote rsyncs FROM when it ships
+                    // production. Unlocked, a retention sweep on release-staging can
+                    // delete a version directory while promote is mid-copy of it,
+                    // and promote's own build would be the one that goes red for it.
+                    mcdDeployLock(deployPath: config.deployPath, """
                         # RETENTION (mc-mhjd). Keeping the newest five was the whole
                         # rule, and on its own it can delete a server binary out from
                         # under a LIVE MATCH: the proxy routes old clients to old
@@ -1159,7 +1327,7 @@ ENVEOF
                         prune_versions "${config.deployPath}/versions" || true
                         prune_versions "${config.deployPath}/testclient-versions" || true
                         echo "✓ Cleanup complete for ${config.environment}"
-                    """
+                    """)
                 }
             }
         }
@@ -1173,9 +1341,24 @@ ENVEOF
                     }
 
                     def proxyNote = (env.PROXY_DEPLOYED == "true") ? " + Proxy" : ""
+
+                    // TELL THE TRUTH AFTER A REFUSED POINTER (mc-ehn1). The build
+                    // is deliberately GREEN when the monotonic guard refuses: being
+                    // superseded by a newer build is the mechanism working, not a
+                    // failure, and the same argument mcdSteamUploadPipeline makes
+                    // for its own coalescing applies here. But the payload having
+                    // deployed while latest.txt was left pointing at a NEWER build
+                    // is not "Deployed Server v<this build>", and announcing that to
+                    // Discord would put a version into the channel that is not the
+                    // one actually serving. That is the exact confusion the 04:06Z
+                    // incident produced by hand.
+                    def deployedMessage = (env.POINTER_VERDICT == 'refused')
+                        ? "☑️ Built and staged Server v${env.SERVER_VERSION}${proxyNote} for ${config.environment}, but a NEWER build already published: latest.txt was left pointing at it and this version is not the one serving"
+                        : "✅ Deployed Server v${env.SERVER_VERSION}${proxyNote} to ${config.environment}"
+
                     discordNotify.success(
                         title: "MechaCorps Server Build",
-                        message: "✅ Deployed Server v${env.SERVER_VERSION}${proxyNote} to ${config.environment}",
+                        message: deployedMessage,
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
                         environment: config.environment,
