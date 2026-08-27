@@ -53,12 +53,48 @@ push behind this job's `disableConcurrentBuilds()`". A reader checking whether
 the guard was present found the word and stopped. The comment described the
 mechanism's precondition as though the file satisfied it.
 
-That comment also concealed a second defect. `mcdRedundantBuild` skips only a
-commit an earlier build **already finished**, and its premise is that queued
-builds all check out the same branch tip. Parallel builds each check out the tip
-at the moment *they* run, which during a burst is a different commit per build,
-which is exactly what #1006 and #1008 show. So the trim could never match, and
-was **structurally unable to fire in precisely the bursts it exists for**.
+That comment also concealed a second effect, though **an earlier version of this
+ADR overstated it and the overstatement was merged. It is corrected here.**
+
+What that version said: that `mcdRedundantBuild` "could never match" and was
+"structurally unable to fire in precisely the bursts it exists for". **That is
+false as stated**, and the build records disprove it. Read off `build.xml`
+`displayName` on the Jenkins master by the mayor (this session has no Jenkins
+access and did not verify it independently):
+
+```
+MCDServer-Main   #1009 trimmed (built by #1007)   <- the 2026-08-27 burst
+MCDServer-Main   #1010 trimmed (built by #1007)   <- the 2026-08-27 burst
+MCDServer-Main   #999  trimmed (built by #998)
+```
+
+Two of the five builds in the very burst this ADR is about **were** trimmed, by
+the mechanism claimed to be incapable of firing. The console tell is in those
+logs too.
+
+The true statement is narrower, and it is the one the mechanism's own header
+predicts: *"A queued build cannot see the builds behind it, but by the time it
+starts it can see what the builds AHEAD of it did."*
+
+> **The trim reaches the queued tail. It cannot reach the concurrent head.**
+
+`#1009` and `#1010` sat queued behind an executor; by the time they *started*,
+`#1007` had finished `SUCCESS` on the same tip, so both of `builtBy()`'s
+conditions were satisfiable and they trimmed. `#1006`, `#1007` and `#1008` ran
+genuinely in parallel, each checking out the tip at the moment *it* ran, which as
+`main` moved meant three different commits (`ef5b60f06` / `d2d5130e8` /
+`066852d43`). For those three neither condition could hold.
+
+So what parallelism defeats is not the mechanism, it is the mechanism's **reach**:
+three builds escaped ahead of it. That is still a reason to serialize, and a
+sharper one than the overstatement was. A control that only reaches the queued
+tail leaves the parallel head free to race on `latest.txt`, which is precisely
+what happened at 21:06:20.209 and 21:06:20.757.
+
+**A corollary worth knowing before reading this job's build list:** a trimmed
+build presents as every stage "skipped due to when conditional". Do not read
+those skips as "no relevant paths changed" on this job; `#1009` and `#1010` were
+first characterised that way and it was wrong.
 
 ## Decision
 

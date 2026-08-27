@@ -251,14 +251,35 @@ def call(Map config) {
             // mention of it in this file was this comment, and so bursts here ran
             // in PARALLEL. Parallel builds each check out the tip at the moment
             // THEY run, which during a burst is a different commit per build
-            // (#1006 got ef5b60f06 while #1008 got 066852d43). mcdRedundantBuild
-            // skips only on a commit an earlier build ALREADY finished, so with
-            // every build on a different commit it could never match, and the trim
-            // was structurally unable to fire in exactly the bursts it exists for.
+            // (#1006 got ef5b60f06, #1007 d2d5130e8, #1008 066852d43).
+            //
+            // AN EARLIER VERSION OF THIS COMMENT SAID THE TRIM WAS "STRUCTURALLY
+            // UNABLE TO FIRE" HERE. That was overstated and the build records
+            // disprove it: in that very burst, #1009 and #1010 were BOTH trimmed
+            // (built by #1007), and #999 trimmed earlier the same way. The true
+            // statement is narrower:
+            //
+            //   THE TRIM REACHES THE QUEUED TAIL. IT CANNOT REACH THE CONCURRENT
+            //   HEAD.
+            //
+            // #1009 and #1010 sat queued behind an executor, so by the time they
+            // STARTED, #1007 had finished SUCCESS on the same tip and both of
+            // builtBy()'s conditions were satisfiable. #1006/#1007/#1008 ran
+            // genuinely in parallel on three different commits, so for those three
+            // neither condition could hold. What parallelism defeats is the
+            // mechanism's REACH, not the mechanism: three builds escaped ahead of
+            // it, and those three are exactly the ones that raced on latest.txt.
             //
             // The option is now present, so the paragraph above is true and the
-            // trim does what it says. Do not remove the option without deleting
-            // this stage: on its own it is inert here.
+            // trim reaches the whole burst rather than only its tail. Removing the
+            // option does not make this stage inert, which is the easy misreading;
+            // it shrinks its reach back to the queued tail and lets the parallel
+            // head race the pointer again.
+            //
+            // READING THE BUILD LIST: a trimmed build presents as every stage
+            // "skipped due to when conditional". Do NOT read those skips as "no
+            // relevant paths changed" on this job. #1009 and #1010 were first
+            // characterised that way and it was wrong.
             //
             // It only ever skips a commit an EARLIER build of this job already
             // built and succeeded on, so it cannot strand a deploy: see
