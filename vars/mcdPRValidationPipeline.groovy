@@ -232,6 +232,40 @@ def call(Map config) {
                             env.DETERMINISM_WIRE_FORMAT_CHANGED = 'false'
                         }
 
+                        // DOCS_ONLY: nothing in this PR can affect ANY stage in this
+                        // pipeline. Derived from the very flags the stage `when`
+                        // guards below read, rather than a second hand-written path
+                        // list that would silently drift out of step with them. Add
+                        // a new gated stage and its flag belongs in this list too.
+                        //
+                        // Tim, 2026-08-28: a docs change should not run a PR build.
+                        // The worked example is GH #2862, a README plus a review
+                        // tool, which ran the FULL client and server suite because
+                        // 'tools/' matched no categorize() rule and reached
+                        // server+client through the unmatched-file fallback. That
+                        // classification is fixed in mcdChangeDetection; this flag
+                        // is the second half.
+                        //
+                        // NOT skipped when this is true: 'ADR Identifier Gate'. A
+                        // standalone ADR PR is exactly a docs-only PR, and that gate
+                        // is the one check written to police it - its own comment
+                        // says so. It costs well under a second.
+                        //
+                        // The required 'jenkins/pr-validation' status is still
+                        // posted either way. A skipped build that posts NOTHING
+                        // leaves the check ABSENT, and an absent required check
+                        // blocks merge forever.
+                        def buildFlags = [
+                            changes.serverChanged, changes.clientChanged,
+                            changes.authChanged, changes.accountServiceChanged,
+                            changes.auctionHouseChanged, changes.proxyChanged,
+                            changes.sharedChanged, changes.crashReportingChanged,
+                            changes.mcpServerChanged, changes.mcpGameServerChanged,
+                            changes.determinismHarnessChanged, changes.tutorialChanged,
+                        ]
+                        def docsOnly = changes.changedFiles && !buildFlags.any { it }
+                        env.DOCS_ONLY = docsOnly.toString()
+
                         def parts = []
                         if (changes.serverChanged) parts << 'server'
                         if (changes.clientChanged) parts << 'client'
@@ -242,6 +276,9 @@ def call(Map config) {
                         if (changes.mcpGameServerChanged && !changes.serverChanged) parts << 'mcp-game-server'
                         def scope = parts ? parts.join(' + ') : 'no builds needed'
                         currentBuild.description += "\nBuilds: ${scope}"
+                        if (docsOnly) {
+                            currentBuild.description += "\n\u23ed\ufe0f Docs-only \u2014 build stages skipped"
+                        }
                     }
                 }
             }
@@ -305,7 +342,7 @@ def call(Map config) {
             // Runs here, before Setup Dependencies and every build, so it fails
             // fast.
             stage('Native Library ABI Check') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.DOCS_ONLY != 'true' && mcdPrSupersession.stillCurrent() } }
                 steps {
                     // Branch-skew guard, same shape as 'ADR Identifier Gate'
                     // above and 'Script Tests' below, and not a failure swallow.
@@ -355,7 +392,7 @@ def call(Map config) {
             // that PR must both merge for the gate to be effective; the
             // jenkins-shared PR description spells out the merge order.
             stage('Per-module Go tests') {
-                when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() } }
+                when { expression { env.PR_ALREADY_MERGED != 'true' && env.DOCS_ONLY != 'true' && mcdPrSupersession.stillCurrent() } }
                 // PR validation doesn't bring up Postgres, so the
                 // `requireIntegrationDB(t)` guard added by MCDClient #1443
                 // would exit(1) any package that hits it. Tell the test
