@@ -103,6 +103,27 @@ def _stage_sh_body(stage: str) -> str:
     return match.group(1)
 
 
+def _stage_src(stage: str) -> str:
+    """Return the whole source of the named stage, up to the next stage.
+
+    _stage_sh_body deliberately returns only the FIRST shell body, which is the
+    right granularity for running a script. It is the wrong one for asking "does
+    this stage do X anywhere", because a stage can carry several sh blocks:
+    'Deploy Proxy (if changed)' writes an env file before it ever reaches the
+    lease wait, so the first body is a heredoc and the guard being asserted on
+    lives further down. Matching the first body would have failed while the
+    pipeline was correct.
+    """
+    src = _src()
+    start = src.find(f"stage('{stage}')")
+    assert start != -1, (
+        f"no stage('{stage}') in mcdServerPipeline.groovy. If it was renamed, "
+        "the mc-2acos guards need to follow it."
+    )
+    nxt = src.find("stage('", start + 1)
+    return src[start:] if nxt == -1 else src[start:nxt]
+
+
 def _render(body: str, deploy_path: Path) -> str:
     """Resolve the Groovy interpolations the way Jenkins would, then unescape.
 
@@ -336,10 +357,17 @@ def _make_versions(
 ) -> Path:
     """Build a versions/ tree with deterministic ordering for `ls -dt`.
 
-    Directory mtimes are set LAST and explicitly. Creating a lease file inside a
-    version directory updates that directory's mtime, which would reorder
-    `ls -dt` and quietly move the leased version into the keep-5 set: the test
-    would then pass without the guard doing anything at all.
+    Leases are written to <deploy>/leases/<tree>/<version>/.in-use, mirroring
+    production: the versions tree is mounted READ-ONLY into the proxy, so a lease
+    inside a version directory could never be written there at all (mc-2acos).
+    `root` names the tree, so a versions/ root leases under leases/versions/.
+
+    Directory mtimes are set LAST and explicitly. That mattered more when the
+    lease lived inside the version directory, where creating it bumped that
+    directory's mtime, reordered `ls -dt` and quietly moved the leased version
+    into the keep-5 set so the test passed without the guard doing anything. The
+    lease no longer touches the version directory, but the ordering is still
+    pinned explicitly rather than left to depend on that.
     """
     leased = leased or {}
     now = time.time()
@@ -352,7 +380,9 @@ def _make_versions(
         (version_dir / "MCDServer").write_text("#!/bin/sh\n")
 
     for name, age_minutes in leased.items():
-        lease = root / name / _LEASE_NAME
+        lease_dir = root.parent / "leases" / root.name / name
+        lease_dir.mkdir(parents=True, exist_ok=True)
+        lease = lease_dir / _LEASE_NAME
         lease.write_text("")
         stamp = now - age_minutes * 60
         os.utime(lease, (stamp, stamp))
@@ -520,9 +550,127 @@ def test_lease_filename_is_the_exact_string_the_proxy_writes() -> None:
     asked for the agreed path to be recorded; this is that record, and renaming
     it on either side has to break this test.
     """
-    body = _stage_sh_body("Cleanup Old Versions")
+    body = _stage_src("Cleanup Old Versions")
     assert _LEASE_NAME in body, (
         f"the cleanup guard no longer looks for {_LEASE_NAME!r}. If the marker "
         "was renamed, the proxy side (mc-epfh) and mc-cdjn must change with it, "
         "or a live match will be deleted by the next deploy."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. The lease lives outside the read-only versions tree (mc-2acos)
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_does_not_look_for_the_lease_inside_the_version_directory() -> None:
+    """The marker moved out of versions/, and reading the old place is the bug.
+
+    versions/ is mounted READ-ONLY into the proxy (docker-compose.proxy.yml), on
+    purpose: deploy artifacts stay immutable and a compromised proxy cannot
+    rewrite a server binary. The lease was nonetheless written into that tree, so
+    in production every write returned EROFS and the proxy logged
+
+        failed to refresh in-use lease ... read-only file system
+
+    every two minutes for hours while BOTH guards that depend on it sat dead.
+    The proxy now writes to its own mount and this stage reads from there.
+
+    A revert to `find "$version" ...` would be silent in the dangerous
+    direction, exactly as a rename would: the guard would simply stop matching
+    and the first symptom would be a live match's binary deleted by a deploy.
+    """
+    body = _stage_src("Cleanup Old Versions")
+    # The escaped form is what sits in the Groovy source: Jenkins turns \$ into $
+    # before /bin/sh sees it. Asserting on the FIND specifically, not merely on
+    # the word "lease_base" appearing somewhere, because the variable is also
+    # assigned and used to rm; a looser check stayed green under a mutation that
+    # pointed the find back at the version directory.
+    assert 'find "\\$lease_base/\\$version"' in body, (
+        "the cleanup guard is not searching the lease base. If it went back to "
+        'find "$version", it is looking inside the read-only versions tree '
+        "where a lease can never have been written. See mc-2acos."
+    )
+    assert "/leases/versions" in body and "/leases/testclient-versions" in body, (
+        "both version trees must get their own lease base. They number versions "
+        "independently, so a shared base lets one tree's lease mask the other's."
+    )
+
+
+def _mkdir_lines(body: str) -> list[str]:
+    """Every mkdir line in a stage body, whitespace-normalised."""
+    return [
+        " ".join(line.split())
+        for line in body.splitlines()
+        if line.strip().startswith("mkdir ")
+    ]
+
+
+def test_the_deploy_creates_the_lease_base() -> None:
+    """A lease base that does not exist is the failure we already had.
+
+    The proxy creates what it can, but the base has to exist on the host for the
+    bind mount to be useful, and a lease that silently no-ops is
+    indistinguishable from the mc-2acos bug it replaces. Creating it here also
+    means it is created BEFORE the proxy starts and therefore by the deploy user,
+    rather than being auto-created root-owned by Docker as the bind mount source.
+    """
+    body = _stage_src("Deploy GameServer & TestClient")
+    mkdirs = _mkdir_lines(body)
+    assert mkdirs, "the deploy no longer creates its deploy-path directories"
+    assert any("/leases" in line for line in mkdirs), (
+        "the deploy no longer creates the lease base. Without it the bind mount "
+        "has nothing behind it and the lease guard goes quiet again. See mc-2acos."
+    )
+
+
+def test_the_deploy_does_not_mkdir_below_the_lease_base() -> None:
+    """THE REGRESSION TEST FOR mc-0d26v. This is the line that broke every deploy.
+
+    PR #117 was correct about where the lease belongs and still had to be
+    reverted (#119) within four hours, because it also created
+    leases/versions and leases/testclient-versions in the deploy:
+
+        mkdir: cannot create directory
+        '/opt/mechacorps/feature-card/leases/versions': Permission denied
+
+    MCDServer-FeatureCard #143, #144 and #145 died on that, all on commits that
+    had nothing to do with it. Every build and test stage passed; only the deploy
+    failed, roughly a second in.
+
+    The asymmetry is the whole point. The proxy container runs as root, so
+    leases/ arrives on the host root-owned, and this deploy runs as an ordinary
+    user. `mkdir -p` on an existing directory succeeds regardless of who owns it,
+    so creating leases/ itself is safe; creating anything INSIDE a root-owned
+    leases/ is not, and it fails the whole stage rather than degrading.
+
+    Everything below leases/ is the proxy's to create anyway. A per-version lease
+    directory cannot be pre-created by a deploy that does not yet know the
+    version name, so this was never a division of labour that could have worked.
+    """
+    body = _stage_src("Deploy GameServer & TestClient")
+    offenders = [line for line in _mkdir_lines(body) if "/leases/" in line]
+    assert not offenders, (
+        "the deploy is creating a directory inside the lease base again:\n  "
+        + "\n  ".join(offenders)
+        + "\nThat is exactly what PR #117 did and what #119 reverted. The proxy "
+        "owns leases/ (it runs as root), this deploy does not, and mkdir inside "
+        "it fails the stage with Permission denied. Create leases/ and stop. "
+        "See mc-0d26v."
+    )
+
+
+def test_the_teardown_wait_reaches_the_lease_tree_depth() -> None:
+    """maxdepth has to clear the <tree>/<version>/ levels.
+
+    The wait is the only thing standing between a deploy and a live match. With
+    the marker two directories below the lease base, a maxdepth of 2 finds
+    nothing at all and the wait never pauses: green, silent, and useless, which
+    is precisely the state mc-2acos left it in.
+    """
+    body = _stage_src("Deploy Proxy (if changed)")
+    assert "-maxdepth 3" in body, (
+        "the teardown lease search no longer reaches <tree>/<version>/.in-use. "
+        "A too-shallow maxdepth makes this guard match nothing and pause "
+        "nothing. See mc-2acos."
     )
