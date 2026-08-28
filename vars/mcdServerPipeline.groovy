@@ -470,6 +470,31 @@ def call(Map config) {
 
                             echo "Starting integration test..."
 
+                            # mc-521yc. The server arms a 120s timer on EVERY
+                            # wait it opens on a player (kDefaultTimeoutSeconds
+                            # in Src/GameServer/Phases/WaitTimeout.cpp), but the
+                            # test clients below get 180s total for a match that
+                            # normally finishes in about 80. One unanswered
+                            # prompt therefore spent two thirds of the budget,
+                            # and the run died at the clients' 180s cap two
+                            # phases downstream of the actual stall, wearing a
+                            # dropped-socket signature it did not cause. That is
+                            # what made mc-n37x cost three days and three
+                            # instrumentation PRs.
+                            #
+                            # 30s sits comfortably above the slowest real bot
+                            # decision measured here (4.8s) and well under the
+                            # client budget, so a stall now costs 30s, the match
+                            # still finishes, and the run fails at the real place
+                            # instead of at the cap.
+                            #
+                            # This reaches the GameServer without a code change:
+                            # WaitTimeout::Initialize() reads the variable at
+                            # startup, and the proxy spawns the server with
+                            # exec.Command and never sets cmd.Env, so the child
+                            # inherits this shell's environment.
+                            export MCD_TURN_TIMEOUT_SECONDS=30
+
                             TEST_TCP_PORT=$((30000 + (BUILD_NUMBER % 10000)))
                             TEST_WS_PORT=$((40000 + (BUILD_NUMBER % 10000)))
 
@@ -573,6 +598,27 @@ def call(Map config) {
                                     grep -niE "disconnect|reconnect|write error|timeout" "$PROXY_LOG" 2>/dev/null | head -30 \
                                         || echo "(none in $PROXY_LOG)"
                                 fi
+
+                                # mc-521yc: the wait timeline. The server now
+                                # names every wait as it OPENS, not only when one
+                                # expires, so a stall is attributable to the wait
+                                # that hung rather than to whatever the run
+                                # happened to be doing 120s later. The catch is
+                                # that the server's own output lands under
+                                # $LOG_DIR in <gameID>/server-stdout.log, which
+                                # is exactly the kind of file nobody opened for
+                                # three days. Print it here: per the archive note
+                                # below, the CONSOLE log is what stays readable
+                                # for about a week.
+                                echo ""
+                                echo "=== Server wait timeline (mc-521yc) ==="
+                                SERVER_WAIT_LINES=$(grep -h -E "WAIT START|TIMEOUT" "$LOG_DIR"/*/server-stdout.log "$LOG_DIR"/game_*.log 2>/dev/null | tail -40)
+                                if [ -n "$SERVER_WAIT_LINES" ]; then
+                                    echo "$SERVER_WAIT_LINES"
+                                else
+                                    echo "(no WAIT START/TIMEOUT lines in the server logs under $LOG_DIR)"
+                                fi
+
 
                                 kill $PROXY_PID 2>/dev/null || true
                                 kill $CLIENT1_PID $CLIENT2_PID 2>/dev/null || true

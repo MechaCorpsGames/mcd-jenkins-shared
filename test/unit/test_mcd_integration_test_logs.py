@@ -43,6 +43,7 @@ No live Jenkins required. Tests parse Groovy source.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -412,3 +413,148 @@ def test_pr_validation_negative_cites_its_source_too(pr_body: str) -> None:
         "MCD-PR-Main reports an empty proxy log as a negative result rather "
         "than as a scan that could not run. See mc-n37x."
     )
+# ---------------------------------------------------------------------------
+# The stall has to fit inside the budget, and it has to be attributable
+# (mc-521yc)
+# ---------------------------------------------------------------------------
+
+# The slowest real bot decision measured on this pipeline while diagnosing
+# mc-n37x. The shortened turn timer has to stay clear of it or CI starts
+# cutting off bots that production would have let think.
+_SLOWEST_REAL_BOT_DECISION_SECONDS = 4.8
+
+
+def _both_bodies() -> list[tuple[str, str]]:
+    """Both pipelines run the same integration test and share its arithmetic."""
+    return [
+        ("mcdServerPipeline", _stage_body(_src(_SERVER_SRC), _STAGE)),
+        ("mcdPRValidationPipeline", _stage_body(_src(_PR_SRC), _STAGE)),
+    ]
+
+
+#
+# The server arms a 120s timer on every wait it opens on a player, while the
+# test clients get 180s total for a match that normally finishes in about 80.
+# So one unanswered prompt spent two thirds of the budget and the run died at
+# the clients' cap, two phases downstream of the stall, wearing a dropped-socket
+# signature it did not cause. Shortening the timer makes the failure land inside
+# the budget; the start-log makes it attributable. Neither is worth much alone,
+# which is why both are guarded here, along with the path the timeline reads:
+# mc-n37x moved the server logs under $LOG_DIR, and a grep left pointing at the
+# old location fails silently and looks like a clean run.
+
+
+def test_both_stages_shorten_the_turn_timer() -> None:
+    """The Integration Test stage exports MCD_TURN_TIMEOUT_SECONDS (mc-521yc).
+
+    WaitTimeout::Initialize() reads this at server startup, and the proxy spawns
+    the GameServer with exec.Command without setting cmd.Env, so the child
+    inherits it. Without the export the server falls back to
+    kDefaultTimeoutSeconds = 120 and a single stall exceeds the client budget.
+    """
+    for name, body in _both_bodies():
+        assert "export MCD_TURN_TIMEOUT_SECONDS=" in body, (
+            f"{name}'s Integration Test stage no longer exports "
+            "MCD_TURN_TIMEOUT_SECONDS. The server falls back to 120s per wait, "
+            "which does not fit inside the clients' 180s budget, so any stall "
+            "again fails at the cap instead of at the stall. See mc-521yc."
+        )
+
+
+def test_turn_timer_expires_inside_the_client_budget() -> None:
+    """The wait must time out before the clients give up (mc-521yc).
+
+    This is the actual arithmetic the bead is about. A turn timer at or above
+    the client timeout puts the failure back at the cap, which is the shape that
+    cost three days. Raising either number without checking the other
+    reintroduces it.
+    """
+    for name, body in _both_bodies():
+        turn = re.search(r"export MCD_TURN_TIMEOUT_SECONDS=(\d+)", body)
+        assert turn, f"{name}: no MCD_TURN_TIMEOUT_SECONDS export found. See mc-521yc."
+        client = re.search(r"--timeout=(\d+)", body)
+        assert client, f"{name}: no client --timeout found. See mc-521yc."
+
+        turn_seconds = int(turn.group(1))
+        client_seconds = int(client.group(1))
+        assert turn_seconds < client_seconds, (
+            f"{name}: the server's turn timer ({turn_seconds}s) is not shorter "
+            f"than the test clients' budget ({client_seconds}s), so a stalled "
+            "wait still kills the run at the cap rather than expiring inside it. "
+            "See mc-521yc."
+        )
+
+
+def test_turn_timer_stays_above_the_slowest_real_bot_decision() -> None:
+    """The timer must not cut off a bot that is merely slow (mc-521yc).
+
+    The other direction of the same trade. Shortening this too far makes CI fail
+    on decisions production would have allowed, which converts a diagnostic aid
+    into a flake generator.
+    """
+    for name, body in _both_bodies():
+        turn = re.search(r"export MCD_TURN_TIMEOUT_SECONDS=(\d+)", body)
+        assert turn, f"{name}: no MCD_TURN_TIMEOUT_SECONDS export found. See mc-521yc."
+        turn_seconds = int(turn.group(1))
+        assert turn_seconds > _SLOWEST_REAL_BOT_DECISION_SECONDS * 2, (
+            f"{name}: a {turn_seconds}s turn timer leaves no headroom over the "
+            f"slowest real bot decision measured here "
+            f"({_SLOWEST_REAL_BOT_DECISION_SECONDS}s). CI would start cutting "
+            "off bots that production lets think. See mc-521yc."
+        )
+
+
+def test_both_stages_surface_the_server_wait_timeline() -> None:
+    """The console shows which wait opened (mc-521yc).
+
+    The server names every wait as it opens, but its output lands in a file
+    under $LOG_DIR that nobody opens. A log line nobody reads buys nothing, so
+    the stage has to print it.
+    """
+    for name, body in _both_bodies():
+        assert "WAIT START" in body, (
+            f"{name}'s Integration Test stage no longer surfaces the server's "
+            "WAIT START lines. They are written to a per-game file under "
+            "$LOG_DIR, which is not read unless the stage prints it, so the "
+            "stall goes back to being anonymous. See mc-521yc."
+        )
+
+
+def test_wait_timeline_reads_the_directory_the_proxy_writes_to() -> None:
+    """The timeline greps $LOG_DIR, not a hardcoded path (mc-521yc).
+
+    Caught in review rather than in CI, which is the point of writing it down.
+    The first version of this grep read logs/*/server-stdout.log, because that
+    is where the proxy's default --log-dir put the server output. mc-n37x then
+    started passing --log-dir "$LOG_DIR" so the logs land somewhere archivable,
+    and the grep silently matched nothing.
+
+    Nothing would have gone red: the surfacing test above only checks that the
+    string "WAIT START" appears in the stage, and the absence branch would have
+    printed its "no lines" message on every build, which reads exactly like a
+    healthy run with no stalls. A detector keyed on a mention cannot see its own
+    blindness, so this pins the path as well as the intent.
+    """
+    for name, body in _both_bodies():
+        assert 'grep -h -E "WAIT START|TIMEOUT" "$LOG_DIR"' in body, (
+            f"{name}'s wait timeline does not grep under $LOG_DIR. The proxy is "
+            "passed --log-dir \"$LOG_DIR\" and writes each match's server "
+            "output to $LOG_DIR/<gameID>/server-stdout.log, so a grep aimed "
+            "anywhere else matches nothing and reports every build as having no "
+            "waits. See mc-521yc and mc-n37x."
+        )
+
+
+def test_wait_timeline_reports_absence_as_well_as_presence() -> None:
+    """An empty timeline says so out loud (mc-521yc).
+
+    Same reasoning as the mc-n37x signature scan above: a grep that prints
+    nothing when it matches nothing cannot be told apart from a grep that never
+    ran.
+    """
+    for name, body in _both_bodies():
+        assert "no WAIT START" in body, (
+            f"{name}'s wait timeline must state explicitly when it finds "
+            "nothing, so a silent grep is never mistaken for a missing one. "
+            "See mc-521yc."
+        )
