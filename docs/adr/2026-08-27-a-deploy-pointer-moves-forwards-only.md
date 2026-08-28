@@ -159,9 +159,68 @@ wrong. Observed on the master:
 
 **One second** between `#1016` finishing and `#1017` starting. `#1017`'s own log
 reads "Still waiting to schedule task" and "Waiting for next available executor"
-for 34 minutes, then it started the instant the job was released. That gap is
-`disableConcurrentBuilds()`, and `#1016` was indeed the build that recorded the
-property rather than one governed by it.
+for 34 minutes, then it started the instant the job was released.
+
+**That timing is consistent with the option, but it does not PROVE it, and an
+earlier version of this section said it did.** With four executors and 55 queued
+items, `#1017` would also have waited for an executor without any option at all,
+and `#1016` ending is itself what freed one. The two explanations are confounded
+by construction, so no arrangement of start and end times can separate them.
+
+**The proof is structural and comes from the job's persisted config, not from
+timings.** `/var/lib/jenkins/jobs/MCDServer-Main/config.xml` now contains:
+
+```
+<org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty>
+```
+
+Jenkins writes that element when a build carrying the options block executes. It
+is not a log line, a queue snapshot or a duration: it is the option installed on
+the job, and Jenkins enforces it from there. For calibration, in the same
+directory: `MCDServer-Main` has 1 such element (installed by this change),
+`MCDClient-Main` has 3 (it always had the option), and
+`MCDServer-Release-Promote` has **0**, which is the subject of the next section.
+
+### A pipeline option activates per JOB, and a rarely-run job stays unprotected
+
+The lag above is not only about the build that merges the change. **A pipeline
+option is recorded on a job only when a build of THAT JOB runs the code carrying
+it.** One merge to the shared library does not arm every job that uses the
+pipeline; each job arms itself on its next build.
+
+That leaves a concrete hole in this decision, and it is on the job this ADR
+names as the dangerous one:
+
+> `MCDServer-Release-Promote` carries **no** `DisableConcurrentBuildsJobProperty`
+> at the time of writing. Its last build is **#12, ABORTED, 2026-08-09.** The
+> option this change adds to `mcdPromotePipeline` is therefore **inert there**,
+> and stays inert until someone promotes a release, which may be weeks.
+
+Why that matters rather than being a nitpick: promote is half of the one deploy
+path with two jobs on it. `MCDServer-Release-Staging` **writes**
+`/opt/mechacorps/release-staging` and `MCDServer-Release-Promote` **reads** it,
+which is exactly the pair `mcdDeployLock` keys on the deploy path to catch. The
+**flock** half of that protection works as soon as both jobs run the new code,
+because it is executed by the build rather than persisted on the job. The
+**serialization** half does not exist on promote until promote next builds, and
+the first promote after a long gap is precisely when an operator is most likely
+to fire it twice.
+
+**Recommendation, for a human to authorise rather than an agent to do:** fire one
+deliberate promote build once the queue has drained, let it reach the
+`Confirm Promote` input gate, and abort it there. The options block is evaluated
+at the start of the run, before any stage, so the property should be persisted by
+a run that never passes the gate; and everything before that gate
+(`Validate Staging Artifacts`) only reads. That converts an unknown into a known
+for the cost of one short build that cannot touch production. **Marked as
+reasoning, not observation:** confirm it worked by re-reading the job's
+`config.xml` for the property after the aborted run, because if aborting at an
+input gate does not persist it, the recommendation is wrong and the alternative
+is to accept the lag and treat the first real promote as the unprotected one.
+
+**This generalises to every rarely-run job in this library.** Any option added
+here is armed job-by-job on next build, so a job that has not built since the
+change is still running the old contract no matter what `main` says.
 
 ### Fewer builds is the binding constraint, so this is a throughput fix too
 
@@ -278,6 +337,36 @@ read as more than it is:
 
 A first green is evidence the happy path works. It is not evidence the guards
 bite.
+
+### Two different things protect the pointer, and only one of them is this change
+
+A build that never reaches the publish step protects the pointer by not writing
+it. That is not the guard, it predates this decision, and the two are easy to
+confuse from the outside because **the host looks identical either way**.
+
+Observed 2026-08-27: `MCDServer-Main` `#1020` FAILED at the Integration Test
+stage on merge `0a92e00`, and every later stage including
+`Deploy GameServer & TestClient` shows *skipped due to earlier failure(s)*. The
+host afterwards read `latest.txt = v0.2.1019/MCDServer` and
+`.published-build = 1019`. Superficially that is the monotonicity guard holding
+the pointer back. **It is not.** The publish step never executed.
+
+| What happened | Protects the pointer by | Introduced by |
+|---|---|---|
+| Build fails **before** the publish step | never reaching it | predates this ADR |
+| Build **reaches** publish with a lower `BUILD_NUMBER` than `.published-build` | the guard refusing | **this ADR** |
+
+**Only the second is this change, and it has never been observed.** Anyone
+grepping later for "did the guard ever hold the pointer back" will find `#1020`'s
+pointer sitting correctly at 1019 and may conclude the guard is proven when it
+has never run. Check for the `mc-ehn1: REFUSING to move` marker, which is the
+only positive evidence the refusal path executed.
+
+The episode is still a good result, worth recording as an observed negative: the
+deploy path behaved correctly under a real mid-pipeline failure, with no partial
+publish, no split between `versions/latest.txt` and
+`testclient-versions/latest.txt`, and `.published-build` agreeing with what the
+proxy will spawn.
 
 ### A caveat this decision makes worse, tracked separately
 
