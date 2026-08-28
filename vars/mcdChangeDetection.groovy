@@ -323,8 +323,26 @@ def categorize(String filePath) {
     if (filePath == 'Makefile') return 'build-system'
 
     // Documentation / tooling paths (no build needed)
+    //
+    // 'tools/' is the capture and review harness tree (tools/*_capture/,
+    // grid_render_benchmark.gd, the coredump helpers). Nothing under it ships
+    // in the client and nothing under it runs in the PR test path, which is
+    // invoked as '-a res://tests'. It is driven by hand through Makefile
+    // capture targets to produce review sheets.
+    //
+    // Before this rule it matched NOTHING and returned 'unknown', so it landed
+    // in unmatchedFiles and the fallback set serverChanged AND clientChanged.
+    // A PR touching only a review tool and a README therefore ran the full
+    // client and server suite, and on merge triggered a real MCDServer-Main
+    // build: GH #2862 is the worked example. Same defect class as the Makefile
+    // rule below - a path we know about arriving through the path meant for
+    // files we do not (mc-lvzi).
+    //
+    // Order matters here: docs/wiki/ is matched ABOVE this loop and must stay
+    // there, or wiki content classifies as 'docs', wikiChanged stops being set
+    // and mcdServicesPipeline silently stops rebuilding the wiki.
     def docPrefixes = [
-        'docs/', '.github/', 'reports/',
+        'docs/', '.github/', 'reports/', 'tools/',
     ]
     for (prefix in docPrefixes) {
         if (filePath.startsWith(prefix)) return 'docs'
