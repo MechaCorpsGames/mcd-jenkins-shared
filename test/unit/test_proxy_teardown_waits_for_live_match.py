@@ -140,24 +140,12 @@ def _run_gate(
     )
 
 
-def _lease_path(deploy_path: Path, name: str) -> Path:
-    """Where the proxy actually writes this version's lease (mc-2acos)."""
-    return deploy_path / "leases" / "versions" / name / _LEASE_NAME
-
-
 def _version(deploy_path: Path, name: str, leased: bool, age_minutes: int = 0) -> Path:
-    """Create versions/<name>/, optionally holding a lease of a given age.
-
-    The lease goes to leases/versions/<name>/.in-use, NOT inside the version
-    directory. versions/ is mounted read-only into the proxy on purpose, so a
-    lease could never be written there; putting it there in a test would model a
-    configuration that has never existed and cannot exist (mc-2acos).
-    """
+    """Create versions/<name>/, optionally holding a lease of a given age."""
     version = deploy_path / "versions" / name
     version.mkdir(parents=True, exist_ok=True)
     if leased:
-        lease = _lease_path(deploy_path, name)
-        lease.parent.mkdir(parents=True, exist_ok=True)
+        lease = version / _LEASE_NAME
         lease.touch()
         if age_minutes:
             old = time.time() - age_minutes * 60
@@ -215,8 +203,8 @@ def test_the_force_is_loud_and_names_what_it_destroyed(tmp_path: Path) -> None:
 
 def test_waits_and_does_not_force_when_the_lease_clears(tmp_path: Path) -> None:
     """The match finishing during the wait must produce a CLEAN teardown."""
-    _version(tmp_path, "v0.2.51", leased=True)
-    lease = _lease_path(tmp_path, "v0.2.51")
+    version = _version(tmp_path, "v0.2.51", leased=True)
+    lease = version / _LEASE_NAME
 
     # The match ends a second in, while the gate is polling.
     subprocess.Popen(["/bin/sh", "-c", f"sleep 1; rm -f '{lease}'"])
