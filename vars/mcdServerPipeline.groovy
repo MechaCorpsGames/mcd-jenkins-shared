@@ -1012,7 +1012,34 @@ EOF
                         echo "\${PROTOCOL_VERSION}" > "\${TESTCLIENT_VERSION_DIR}/protocol.txt"
                         echo "✓ Protocol manifest: protocol \${PROTOCOL_VERSION} written to \${SERVER_VERSION_DIR}/protocol.txt and \${TESTCLIENT_VERSION_DIR}/protocol.txt"
 
-                        mkdir -p ${config.deployPath}/versions ${config.deployPath}/testclient-versions ${config.deployPath}/Data/GameData
+                        # THE LEASE BASE, AND NOTHING BELOW IT. This mkdir stops at
+                        # leases/ deliberately. PR #117 also created
+                        # leases/versions and leases/testclient-versions here, and
+                        # that broke every deploy on an environment whose leases/
+                        # the proxy had already made: the proxy container runs as
+                        # root, so leases/ lands on the host root-owned, and this
+                        # deploy runs as an ordinary user that cannot mkdir inside
+                        # it. MCDServer-FeatureCard #143, #144 and #145 all died on
+                        #   mkdir: cannot create directory
+                        #   '/opt/mechacorps/feature-card/leases/versions':
+                        #   Permission denied
+                        # and #117 was reverted by #119 (mc-0d26v).
+                        #
+                        # mkdir -p on a directory that ALREADY EXISTS succeeds
+                        # whether or not this user could have created it, so this
+                        # line is safe on those environments. On one where leases/
+                        # does not exist yet it runs before the proxy starts and
+                        # creates it as the deploy user, which is strictly better
+                        # than letting Docker auto-create the bind mount source as
+                        # root.
+                        #
+                        # Everything below leases/ stays the proxy's to create, and
+                        # has to be: a per-version lease directory cannot be
+                        # pre-created by a deploy that does not yet know the version
+                        # name. The proxy makes them traversable by this user
+                        # (Src/Proxy/lease.go, MCDClient #2855), which is what lets
+                        # the two guards below read them at all.
+                        mkdir -p ${config.deployPath}/versions ${config.deployPath}/testclient-versions ${config.deployPath}/Data/GameData ${config.deployPath}/leases
                         # --exclude latest.txt IS THE RACE FIX (mc-ehn1). Everything
                         # else in these directories is purely ADDITIVE: each build
                         # writes its own v<x>.<y>.<build>/ subtree and never touches
@@ -1335,8 +1362,17 @@ ENVEOF
                                 PROXY_LEASE_POLL_SECONDS=\${PROXY_LEASE_POLL_SECONDS:-15}
                                 PROXY_LEASE_MINUTES=\${PROXY_LEASE_MINUTES:-60}
 
+                                # Leases live at
+                                # ${config.deployPath}/leases/<tree>/<version>/.in-use,
+                                # NOT inside versions/. That tree is mounted read-only into
+                                # the proxy on purpose, so every lease write returned EROFS
+                                # and this wait could never once fire (mc-2acos).
+                                # maxdepth 3 rather than 2 because of the <tree> level, which
+                                # keeps versions/ and testclient-versions/ (which number
+                                # their versions independently) from masking each other.
+                                # Either tree being leased means a match is live.
                                 live_lease() {
-                                    find "${config.deployPath}/versions" -maxdepth 2 \\
+                                    find "${config.deployPath}/leases" -maxdepth 3 \\
                                         -name .in-use -mmin -"\$PROXY_LEASE_MINUTES" \\
                                         2>/dev/null | head -n 1
                                 }
@@ -1344,7 +1380,7 @@ ENVEOF
                                 lease_holder=\$(live_lease)
                                 lease_waited=0
                                 if [ -n "\$lease_holder" ]; then
-                                    echo "PAUSE proxy teardown: a match is live on \$(dirname "\$lease_holder")"
+                                    echo "PAUSE proxy teardown: a match is live on \$(basename "\$(dirname "\$lease_holder")")"
                                     echo "  waiting up to \${PROXY_LEASE_WAIT_SECONDS}s for its .in-use lease to clear"
                                     while [ -n "\$lease_holder" ] && [ "\$lease_waited" -lt "\$PROXY_LEASE_WAIT_SECONDS" ]; do
                                         sleep "\$PROXY_LEASE_POLL_SECONDS"
@@ -1353,7 +1389,7 @@ ENVEOF
                                     done
                                     if [ -n "\$lease_holder" ]; then
                                         echo "FORCED proxy teardown after \${lease_waited}s of waiting."
-                                        echo "  \$(dirname "\$lease_holder") STILL held its .in-use lease."
+                                        echo "  \$(basename "\$(dirname "\$lease_holder")") STILL held its .in-use lease."
                                         echo "  A LIVE MATCH IS BEING DESTROYED BY THIS DEPLOY (mc-ic6h)."
                                         echo "  The bound is PROXY_LEASE_WAIT_SECONDS=\${PROXY_LEASE_WAIT_SECONDS}s."
                                     else
@@ -1510,7 +1546,7 @@ ENVEOF
                         #
                         # THE LEASE. This contract is shared verbatim with the proxy
                         # (mc-epfh); both sides hardcode the same path:
-                        #   path       <version-dir>/.in-use
+                        #   path       <lease-dir>/<tree>/<version>/.in-use
                         #   created    by the proxy when a match starts on that version
                         #   refreshed  touched at least every 5 minutes while any match
                         #              on that version is still live
@@ -1526,23 +1562,39 @@ ENVEOF
                         # as dead.
                         IN_USE_LEASE_MINUTES=60
 
+                        # \$2 is the lease base for this tree. The marker moved OUT
+                        # of the version directory: versions/ is mounted read-only
+                        # into the proxy on purpose, so a lease written there
+                        # returned EROFS and this guard has never once kept a
+                        # version (mc-2acos).
+                        # BOTH trees keep the guard. mc-cdjn Phase 2 routes bots by
+                        # protocol too, so a testclient version can be live under a
+                        # practice or takeover bot exactly as a server version can.
+                        # They get separate lease bases because the two trees number
+                        # their versions independently and would otherwise mask each
+                        # other.
                         prune_versions() {
                             target="\$1"
+                            lease_base="\$2"
                             [ -d "\$target" ] || return 0
                             cd "\$target" || return 0
                             for candidate in \$(ls -dt v*/ 2>/dev/null | tail -n +6); do
                                 version="\${candidate%/}"
-                                if [ -n "\$(find "\$version" -maxdepth 1 -name .in-use -mmin -"\${IN_USE_LEASE_MINUTES}" 2>/dev/null)" ]; then
+                                if [ -n "\$lease_base" ] && [ -n "\$(find "\$lease_base/\$version" -maxdepth 1 -name .in-use -mmin -"\${IN_USE_LEASE_MINUTES}" 2>/dev/null)" ]; then
                                     echo "⏸ keeping \${version} (in-use lease held, a match is live on it)"
                                     continue
                                 fi
                                 rm -rf "\$version"
+                                # The lease directory for a version that no longer
+                                # exists is dead weight; leaving them would grow one
+                                # empty directory per deploy forever.
+                                [ -n "\$lease_base" ] && rm -rf "\$lease_base/\$version"
                                 echo "🗑 removed \${version}"
                             done
                         }
 
-                        prune_versions "${config.deployPath}/versions" || true
-                        prune_versions "${config.deployPath}/testclient-versions" || true
+                        prune_versions "${config.deployPath}/versions" "${config.deployPath}/leases/versions" || true
+                        prune_versions "${config.deployPath}/testclient-versions" "${config.deployPath}/leases/testclient-versions" || true
                         echo "✓ Cleanup complete for ${config.environment}"
                     """)
                 }

@@ -140,12 +140,24 @@ def _run_gate(
     )
 
 
+def _lease_path(deploy_path: Path, name: str) -> Path:
+    """Where the proxy actually writes this version's lease (mc-2acos)."""
+    return deploy_path / "leases" / "versions" / name / _LEASE_NAME
+
+
 def _version(deploy_path: Path, name: str, leased: bool, age_minutes: int = 0) -> Path:
-    """Create versions/<name>/, optionally holding a lease of a given age."""
+    """Create versions/<name>/, optionally holding a lease of a given age.
+
+    The lease goes to leases/versions/<name>/.in-use, NOT inside the version
+    directory. versions/ is mounted read-only into the proxy on purpose, so a
+    lease could never be written there; putting it there in a test would model a
+    configuration that has never existed and cannot exist (mc-2acos).
+    """
     version = deploy_path / "versions" / name
     version.mkdir(parents=True, exist_ok=True)
     if leased:
-        lease = version / _LEASE_NAME
+        lease = _lease_path(deploy_path, name)
+        lease.parent.mkdir(parents=True, exist_ok=True)
         lease.touch()
         if age_minutes:
             old = time.time() - age_minutes * 60
@@ -203,8 +215,8 @@ def test_the_force_is_loud_and_names_what_it_destroyed(tmp_path: Path) -> None:
 
 def test_waits_and_does_not_force_when_the_lease_clears(tmp_path: Path) -> None:
     """The match finishing during the wait must produce a CLEAN teardown."""
-    version = _version(tmp_path, "v0.2.51", leased=True)
-    lease = version / _LEASE_NAME
+    _version(tmp_path, "v0.2.51", leased=True)
+    lease = _lease_path(tmp_path, "v0.2.51")
 
     # The match ends a second in, while the gate is polling.
     subprocess.Popen(["/bin/sh", "-c", f"sleep 1; rm -f '{lease}'"])
@@ -217,6 +229,60 @@ def test_waits_and_does_not_force_when_the_lease_clears(tmp_path: Path) -> None:
     assert "FORCED" not in result.stdout, (
         "the gate forced even though the match ended in time. It is not "
         f"re-checking the lease while it waits:\n{result.stdout}"
+    )
+
+
+def test_the_pause_line_is_printed_and_names_the_version(tmp_path: Path) -> None:
+    """The acceptance line for mc-0d26v, pinned as far as a test can pin it.
+
+    Every other test here asserts PAUSE is ABSENT. Nothing asserted it is ever
+    printed, so the whole positive path was unpinned: a gate that had stopped
+    finding leases entirely would have kept this file green, which is close to
+    the state production was actually in on 2026-08-28. A detector that only
+    knows what absence looks like cannot report a disappearance.
+
+    That matters more than usual here because this exact string is the
+    acceptance criterion. It has never been printed in production: the guard
+    searched the pre-mc-2acos path and found nothing, so MCDServer-Main #1072
+    tore down mcd-main-proxy-1 under a live match (GH #2854).
+
+    This runs the real gate body against a lease at the real path. What it
+    cannot do is prove the deploy user can READ that path on the host, which is
+    the other half of mc-0d26v and lives in MCDClient #2855.
+    """
+    _version(tmp_path, "v0.2.1071", leased=True)
+
+    result = _run_gate(tmp_path, wait=2, poll=1)
+
+    assert "PAUSE proxy teardown: a match is live on v0.2.1071" in result.stdout, (
+        "the gate did not announce the pause, or did not name the version. This "
+        "is the line that has never appeared in a production deploy and the one "
+        "mc-0d26v is judged on:\n" + result.stdout
+    )
+
+
+def test_a_lease_in_the_testclient_tree_also_pauses(tmp_path: Path) -> None:
+    """Both trees hold the deploy, not just versions/.
+
+    mc-cdjn Phase 2 routes bots by protocol, so a testclient version can be live
+    under a practice or takeover bot exactly as a server version can. The two
+    trees number their versions independently, which is why the marker carries a
+    <tree> level at all, and it is why the search is maxdepth 3 rather than 2.
+
+    Every existing test leases through _lease_path, which hardcodes 'versions',
+    so this branch of the layout was never executed by anything.
+    """
+    lease = tmp_path / "leases" / "testclient-versions" / "v0.2.1071" / _LEASE_NAME
+    lease.parent.mkdir(parents=True, exist_ok=True)
+    lease.touch()
+
+    result = _run_gate(tmp_path, wait=2, poll=1)
+
+    assert "PAUSE proxy teardown: a match is live on v0.2.1071" in result.stdout, (
+        "a live testclient lease did not pause the teardown. If the search lost "
+        "its <tree> level, or went back to maxdepth 2, this is how it looks: "
+        "silent, green, and a bot match destroyed by the next deploy.\n"
+        + result.stdout
     )
 
 
