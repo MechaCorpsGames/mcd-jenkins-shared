@@ -118,6 +118,30 @@ def call(Map config) {
                 printContributedVariables: true,
                 printPostContent: false,
                 silentResponse: false,
+                // allowSeveralTriggersPerBuild IS DELIBERATELY ABSENT HERE, and
+                // the five branch pipelines that set it true are not an
+                // oversight to be copied (bead mc-h2nm2).
+                //
+                // Setting it true removes the plugin's per-invocation
+                // `jenkins-generic-webhook-trigger-plugin_uuid` parameter, which
+                // is what lets Jenkins collapse queued items of the same job.
+                // That is exactly right for a branch job, where every queued item
+                // means the same thing: build the tip of one branch.
+                //
+                // It is wrong here. This job serves EVERY open PR against its
+                // target branch, and MCD-PR-Main and MCD-PR-Release declare no
+                // build parameters at all (checked on the controller: no
+                // ParametersDefinitionProperty in either config.xml). pr_number
+                // is a webhook variable, not a parameter, so with the uuid gone
+                // two queued items for DIFFERENT PRs would be parameter-identical
+                // and Jenkins would collapse them into one build. The survivor
+                // keeps the first payload, so PR X's build would report against
+                // PR Y and PR Y's check would sit pending forever, which is
+                // mc-waxw arriving through a different door.
+                //
+                // Supersession here is keyed on pr_number in
+                // mcdPrSupersession.groovy, which is the mechanism that already
+                // answers "only the latest" for this pipeline.
                 regexpFilterText: '$action $pr_base_ref',
                 regexpFilterExpression: "(opened|synchronize|reopened) ${config.targetBranch}"
             )

@@ -65,6 +65,15 @@ def call(Map config) {
                 printContributedVariables: true,
                 printPostContent: false,
                 silentResponse: false,
+                // Coalesce a merge burst into one build (bead mc-h2nm2). Left
+                // false, the plugin stamps a unique
+                // `jenkins-generic-webhook-trigger-plugin_uuid` parameter on
+                // every push, so Jenkins never collapses queued items and
+                // disableConcurrentBuilds() above turns a burst into a serial
+                // queue of identical builds. The long version of this reasoning,
+                // including the bytecode it was read from, is in
+                // mcdServerPipeline.groovy. NOT ON mcdPRValidationPipeline.
+                allowSeveralTriggersPerBuild: true,
                 regexpFilterText: '$ref',
                 regexpFilterExpression: "refs/heads/${config.branch}"
             )
