@@ -102,6 +102,50 @@ def call(Map config) {
                 printContributedVariables: true,
                 printPostContent: false,
                 silentResponse: false,
+                // COALESCE A MERGE BURST INTO ONE BUILD (bead mc-h2nm2).
+                //
+                // Tim, 2026-08-31: "trim the jenkins builds so only the latest
+                // build actually builds."
+                //
+                // Jenkins collapses queued items of the same job only when their
+                // PARAMETERS are identical. Left at its default of false, this
+                // plugin stamps a fresh
+                // `jenkins-generic-webhook-trigger-plugin_uuid` StringParameterValue
+                // on every invocation, so no two pushes ever look alike and
+                // nothing can ever coalesce. Combined with
+                // disableConcurrentBuilds() above, a burst SERIALIZES instead:
+                // nine merges in four minutes queued 8 MCDServer builds and 4
+                // MCDAppServices builds, each destined to check out the same tip
+                // and repeat the same 10-20 minutes of work.
+                //
+                // Read out of the installed plugin (generic-webhook-trigger
+                // 2.3.1) rather than its documentation:
+                // GenericTrigger.trigger() passes this field as the third
+                // argument to ParameterActionUtil.createParameterAction, and
+                // that method adds the uuid parameter if and only if the
+                // argument is FALSE. The field has four bytecode references in
+                // the whole plugin: the declaration, its setter, its getter, and
+                // that one call. It does nothing else.
+                //
+                // These jobs declare no build parameters of their own
+                // (ParametersDefinitionProperty is absent from all sixteen
+                // webhook job configs), so with the uuid gone a queued item
+                // carries NO parameters and Jenkins' own coalescing does the
+                // whole job: no queue policing, no aborts, nothing to interrupt
+                // the rsync in the publish stages that
+                // ADR 2026-08-25-superseded-cancel-goes-where-nothing-is-published
+                // exists to protect.
+                //
+                // The webhook's variables are NOT parameters, so coalescing
+                // cannot merge the wrong commit into a build: the build checks
+                // out the branch TIP either way. Measured on the controller, the
+                // surviving build keeps the FIRST push's variables and records
+                // all five causes, which is the safe direction for 'Detect
+                // Changes' below: baseRef = env.before_sha then spans the whole
+                // burst rather than only its last push.
+                //
+                // NOT ON mcdPRValidationPipeline. See the comment there.
+                allowSeveralTriggersPerBuild: true,
                 // Filter on the ref ONLY. Path filtering deliberately does not
                 // happen here: see the 'Detect Changes' stage below, which is
                 // what actually decides whether this build does any work.
