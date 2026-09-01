@@ -210,6 +210,75 @@ def test_unstable_handler_passes_the_reason_as_its_own_field(path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
+# The SAME defect on the failure path
+#
+# mjs-q4x fixed post { unstable } and wrote every guard above scoped to it. The
+# failure handler was left reading BUILD_PHASE, so every FAILING client build
+# announced "Build failed at: Initializing", naming a phase where nothing had
+# happened yet, on the path that fires when something is actually broken.
+#
+# That is the more expensive half of the original bug. An unstable build is a
+# warning somebody may read later; a failed build is the one people open the
+# channel for, and it was the one telling them nothing.
+#
+# These mirror the unstable guards one for one so the two handlers cannot drift
+# apart again.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", _NOTIFYING_PIPELINES, ids=lambda p: p.name)
+def test_failure_handler_does_not_read_build_phase(path: Path) -> None:
+    """The failure message must not be built from BUILD_PHASE.
+
+    Same reasoning as the unstable guard above, and the same environment{}
+    shadowing: post{} only ever sees the "Initializing" literal, so reporting
+    the phase reports a constant.
+    """
+    body = _post_condition_body(_src(path), "failure")
+    code = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("//")
+    )
+    assert "BUILD_PHASE" not in code, (
+        f"{path.name} post {{ failure }} reads BUILD_PHASE. The environment{{}} "
+        "block shadows every per-stage assignment, so this always renders "
+        '"Build failed at: Initializing" no matter what broke. Name the cause '
+        "instead. See mjs-q4x."
+    )
+
+
+@pytest.mark.parametrize("path", _NOTIFYING_PIPELINES, ids=lambda p: p.name)
+def test_failure_handler_never_says_initializing(path: Path) -> None:
+    """No fallback may reintroduce the meaningless phase text on the red path."""
+    body = _post_condition_body(_src(path), "failure")
+    code = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("//")
+    )
+    assert "Initializing" not in code, (
+        f"{path.name} post {{ failure }} can still say 'Initializing'. See mjs-q4x."
+    )
+
+
+def test_client_failure_handler_has_a_fallback_message() -> None:
+    """A failure nothing recorded is still a sentence, not an empty embed.
+
+    Not every failure has a recorded cause: a compile error in a cross-platform
+    build throws without anything calling the recorder. The handler must still
+    produce a readable line, and it must point at the console log rather than
+    inventing a phase.
+
+    CLIENT ONLY, deliberately. The server's failure handler builds an
+    unconditional sentence from config.environment and has no reason lookup to
+    fall back from, so it has no fallback branch to guard. The two guards above
+    are the ones that are invariants for both.
+    """
+    body = _post_condition_body(_src(_CLIENT_SRC), "failure")
+    assert "console log" in body, (
+        "mcdClientPipeline.groovy post { failure } needs a fallback for the "
+        "case where nothing recorded a cause. See mjs-q4x."
+    )
+
+
+# ---------------------------------------------------------------------------
 # The trap that created the bug: environment{} shadowing
 # ---------------------------------------------------------------------------
 
