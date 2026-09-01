@@ -1097,12 +1097,33 @@ EOF
                     )
                 }
             }
+            // Names the CAUSE, for the same reasons the unstable handler above
+            // does. This used to report env.BUILD_PHASE and produced
+            // "Build failed at: Initializing" on EVERY failing client build:
+            // BUILD_PHASE is declared in the environment{} block, declarative
+            // re-applies that literal as a contextual override, and the
+            // per-stage `env.BUILD_PHASE = '...'` assignments never reach
+            // post{}. mjs-q4x fixed exactly this on the unstable path and left
+            // the failure path reading it, which is the more expensive half:
+            // an unstable build is a warning somebody may read later, a failed
+            // build is the one people open the channel for.
+            //
+            // UNSTABLE_REASON is the right source even on the red path. It
+            // records CAUSES, not severities: the GDScript stage publishes its
+            // failure count from post{always}, which runs whether the run ends
+            // UNSTABLE or FAILURE, so on a red build it already holds the real
+            // cause. A failure nothing recorded (a cross-platform compile that
+            // simply threw) falls back to the console log rather than naming a
+            // phase that means nothing.
             failure {
                 script {
-                    def failedPhase = env.BUILD_PHASE ?: 'Unknown'
+                    def reason = env.UNSTABLE_REASON?.trim()
+                    def detail = reason
+                        ? "❌ Build failed: ${reason}"
+                        : "❌ Build failed. See the console log"
                     discordNotify.failure(
                         title: "MechaCorps Client Build",
-                        message: "❌ Build failed at: ${failedPhase}",
+                        message: detail,
                         jenkinsUrl: env.JENKINS_URL_BASE,
                         jobName: config.jobName,
                         environment: config.environment,
