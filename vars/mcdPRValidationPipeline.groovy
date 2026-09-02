@@ -625,6 +625,21 @@ def call(Map config) {
             // survived the filter" is stated here as well as in the Makefile.
             stage('GDScript Tests') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
+                // Same deadline mcdClientPipeline's copy of this stage carries
+                // (mc-ezb8q), for the same reason: a native crash in the
+                // headless gdUnit run does not end the process, it spins at
+                // 100% CPU. This job is less exposed than the branch jobs
+                // because the build-level timeout(45, MINUTES) above would
+                // eventually catch it, but a build-level timeout ABORTS with no
+                // junit and no stage name, so a stage that hangs here would
+                // still be reported as an unexplained abort 45 minutes later.
+                //
+                // 30 minutes is 3x the longest healthy run observed
+                // (MCD-PR-Main #2112, 9m52s, 2026-09-02) and stays under the
+                // build-level cap, so this fires first and names itself.
+                options {
+                    timeout(time: 30, unit: 'MINUTES')
+                }
                 steps {
                     sh '''#!/bin/bash
                         # -e is not optional. This body has a shebang, so Jenkins

@@ -28,6 +28,30 @@ def call(Map config) {
             // pipeline-level serialization. Waiting 10–15 min in a bad
             // burst is better than a silent rsync race.
             disableConcurrentBuilds()
+
+            // Backstop deadline for the whole build (mc-ezb8q). Not the main
+            // control (that is the per-stage timeout on GDScript Tests), just
+            // the one that catches a hang in a stage nobody has instrumented.
+            //
+            // WHY IT WAS NOT HERE AND HAD TO BE. MCDClient-FeatureCard #216
+            // took a native signal 11 inside the headless GDScript run. The
+            // engine printed its crash banner and then the process spun at
+            // 100% CPU without exiting. With no deadline anywhere the build
+            // ran for 10h46m until Julius cancelled it, and because
+            // disableConcurrentBuilds() is directly above this line, the
+            // cancel then wedged the queue: #217 aborted into a
+            // StackOverflowError inside CpsFlowExecution#notifyListeners, its
+            // log listener was never nulled, and #218 was refused with "Build
+            // #217 is already in progress" while nothing was running. The two
+            // options are a pair: serialising builds without a deadline means
+            // one hung build stops the branch indefinitely.
+            //
+            // 120 minutes is roughly 2.5x the longest healthy run observed
+            // (MCDClient-Main #1377, 47m7s, 2026-09-02). It is deliberately
+            // loose: a build-level timeout ABORTS, which publishes no junit and
+            // names no stage, so it is the worse of the two signals and should
+            // only ever fire for something the stage timeouts missed.
+            timeout(time: 120, unit: 'MINUTES')
         }
 
         environment {
@@ -328,6 +352,34 @@ def call(Map config) {
                 when { expression { env.CLIENT_CHANGED == 'true' } }
                 parallel {
                     stage('GDScript Tests') {
+                        // The deadline that actually matters (mc-ezb8q). This
+                        // is the stage that hung MCDClient-FeatureCard #216 for
+                        // 10h46m, and a stage timeout is a much better signal
+                        // than the build-level backstop above: it FAILS the
+                        // stage rather than aborting the build, so the post
+                        // block below still runs, junit still publishes
+                        // whatever the run produced, and the notification names
+                        // "GDScript Tests" instead of a bare ABORTED.
+                        //
+                        // 45 minutes, sized from measurement rather than taste.
+                        // The longest healthy run observed is 20m45s
+                        // (MCDClient-FeatureCard #219, 2026-09-02), on a build
+                        // where the parallel MCDCoreExt Linux Release branch
+                        // took 10m41s against 3m56s in #1377, so agent
+                        // contention alone moves this stage by more than 2x.
+                        // 30 minutes was the first proposal and is only 1.4x
+                        // the worst observed, which is close enough to turn a
+                        // loaded agent into a red build. A control that cries
+                        // wolf gets removed.
+                        //
+                        // The underlying crash is separately addressed in
+                        // MCDClient by not initializing the Sentry SDK in
+                        // automated runs, which is what makes a native crash
+                        // exit at all. This timeout is the part that does not
+                        // care WHY the stage hung.
+                        options {
+                            timeout(time: 45, unit: 'MINUTES')
+                        }
                         steps {
                             script { env.BUILD_PHASE = 'GDScript Tests' }
                             sh """
