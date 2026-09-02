@@ -28,6 +28,51 @@ def call(Map config) {
             // pipeline-level serialization. Waiting 10–15 min in a bad
             // burst is better than a silent rsync race.
             disableConcurrentBuilds()
+
+            // Backstop deadline for the whole build (mc-ezb8q). Not the main
+            // control (that is the per-stage timeout on GDScript Tests), just
+            // the one that catches a hang in a stage nobody has instrumented.
+            //
+            // WHY IT WAS NOT HERE AND HAD TO BE. MCDClient-FeatureCard #216
+            // took a native signal 11 inside the headless GDScript run. The
+            // engine printed its crash banner and then the process spun at
+            // 100% CPU without exiting. With no deadline anywhere the build
+            // ran for 10h46m until Julius cancelled it, and because
+            // disableConcurrentBuilds() is directly above this line, the
+            // cancel then wedged the queue: #217 aborted into a
+            // StackOverflowError inside CpsFlowExecution#notifyListeners, its
+            // log listener was never nulled, and #218 was refused with "Build
+            // #217 is already in progress" while nothing was running. The two
+            // options are a pair: serialising builds without a deadline means
+            // one hung build stops the branch indefinitely.
+            //
+            // WHAT THIS CLOCK ACTUALLY COVERS, because the raw build
+            // durations in Jenkins are the wrong thing to size it against. A
+            // declarative options{ timeout } is compiled to a timeout step
+            // INSIDE the agent allocation, not around the whole run. Read the
+            // closing order in any build log:
+            //
+            //     [Pipeline] // timeout
+            //     [Pipeline] // withEnv
+            //     [Pipeline] // withCredentials
+            //     [Pipeline] // withDockerContainer
+            //     [Pipeline] // node
+            //
+            // so queue wait, executor allocation and container startup are all
+            // OUTSIDE it. MCD-PR-Main #2116 is the proof: it finished SUCCESS
+            // at 57m23s under mcdPRValidationPipeline's timeout(45, MINUTES),
+            // which looks like a contradiction and is not. That is also what
+            // makes this option safe here: a build sitting behind nine others
+            // in a saturated queue is not penalised for waiting.
+            //
+            // 120 minutes against a longest observed TOTAL of 47m7s
+            // (MCDClient-Main #1377, 2026-09-02) is therefore an even looser
+            // margin than it reads, since the stage time inside that 47m7s is
+            // smaller again. Loose is the intent: a build-level timeout ABORTS,
+            // which publishes no junit and names no stage, so it is the worse
+            // of the two signals and should only ever fire for something the
+            // stage timeouts missed.
+            timeout(time: 120, unit: 'MINUTES')
         }
 
         environment {
@@ -328,6 +373,41 @@ def call(Map config) {
                 when { expression { env.CLIENT_CHANGED == 'true' } }
                 parallel {
                     stage('GDScript Tests') {
+                        // The deadline that actually matters (mc-ezb8q). This
+                        // is the stage that hung MCDClient-FeatureCard #216 for
+                        // 10h46m, and a stage timeout is a much better signal
+                        // than the build-level backstop above: it FAILS the
+                        // stage rather than aborting the build, so the post
+                        // block below still runs, junit still publishes
+                        // whatever the run produced, and the notification names
+                        // "GDScript Tests" instead of a bare ABORTED.
+                        //
+                        // 30 minutes. Every healthy run of this stage measured
+                        // on 2026-09-02:
+                        //
+                        //   MCD-PR-Main          #2112    9m52s
+                        //   MCDClient-FeatureCard #218   12m20s
+                        //   MCDClient-Main       #1377   15m43s
+                        //   MCDClient-FeatureCard #219   20m45s
+                        //
+                        // so this is 1.4x the slowest observed. That is thinner
+                        // than it looks, because #219's parallel MCDCoreExt
+                        // Linux Release branch took 10m41s against 3m56s in
+                        // #1377: agent contention alone moves work in this
+                        // stage by more than 2x, and the 20m45s end of the
+                        // range is what a loaded agent already produces. If
+                        // this starts reddening healthy builds, that is the
+                        // measurement to re-take, and the number to raise (45
+                        // minutes was the alternative considered).
+                        //
+                        // The underlying crash is separately addressed in
+                        // MCDClient by not initializing the Sentry SDK in
+                        // automated runs, which is what makes a native crash
+                        // exit at all. This timeout is the part that does not
+                        // care WHY the stage hung.
+                        options {
+                            timeout(time: 30, unit: 'MINUTES')
+                        }
                         steps {
                             script { env.BUILD_PHASE = 'GDScript Tests' }
                             sh """
