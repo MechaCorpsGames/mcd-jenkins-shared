@@ -89,6 +89,33 @@ the table, and the number to raise is this one.
 ceiling of 90, with those measurements written into the failure messages, so the next
 person to tune this is arguing with numbers rather than taste.
 
+### What a declarative `timeout` clock actually covers
+
+Worth stating, because the raw build durations in Jenkins contradict it on their
+face. `MCD-PR-Main` #2116 finished **SUCCESS at 57m23s** under
+`mcdPRValidationPipeline`'s `timeout(time: 45, unit: 'MINUTES')`. That is not a
+broken timeout.
+
+A declarative `options { timeout }` compiles to a `timeout` step *inside* the agent
+allocation. The closing order in #2116's log says so:
+
+```
+[Pipeline] // timeout
+[Pipeline] // withEnv
+[Pipeline] // withCredentials
+[Pipeline] // withDockerContainer
+[Pipeline] // node
+```
+
+Queue wait, executor allocation and container startup are all outside it. So the
+clock bounds the stages, which is exactly where a hung `GDScript Tests` lives, and a
+build queued behind nine others is not penalised for waiting. That is what makes a
+build-level timeout safe to add to a pipeline carrying `disableConcurrentBuilds()`.
+
+It also means the 120-minute backstop is looser than it reads: it was sized against a
+longest observed **total** build of 47m7s (`MCDClient-Main` #1377), and the stage time
+inside that total is smaller again. Loose is the intent.
+
 ### Why `mcdPRValidationPipeline` is deliberately left alone
 
 It carries the same stage, and it does **not** get a stage timeout here. It already

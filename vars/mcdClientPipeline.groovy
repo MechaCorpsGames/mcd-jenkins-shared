@@ -46,11 +46,32 @@ def call(Map config) {
             // options are a pair: serialising builds without a deadline means
             // one hung build stops the branch indefinitely.
             //
-            // 120 minutes is roughly 2.5x the longest healthy run observed
-            // (MCDClient-Main #1377, 47m7s, 2026-09-02). It is deliberately
-            // loose: a build-level timeout ABORTS, which publishes no junit and
-            // names no stage, so it is the worse of the two signals and should
-            // only ever fire for something the stage timeouts missed.
+            // WHAT THIS CLOCK ACTUALLY COVERS, because the raw build
+            // durations in Jenkins are the wrong thing to size it against. A
+            // declarative options{ timeout } is compiled to a timeout step
+            // INSIDE the agent allocation, not around the whole run. Read the
+            // closing order in any build log:
+            //
+            //     [Pipeline] // timeout
+            //     [Pipeline] // withEnv
+            //     [Pipeline] // withCredentials
+            //     [Pipeline] // withDockerContainer
+            //     [Pipeline] // node
+            //
+            // so queue wait, executor allocation and container startup are all
+            // OUTSIDE it. MCD-PR-Main #2116 is the proof: it finished SUCCESS
+            // at 57m23s under mcdPRValidationPipeline's timeout(45, MINUTES),
+            // which looks like a contradiction and is not. That is also what
+            // makes this option safe here: a build sitting behind nine others
+            // in a saturated queue is not penalised for waiting.
+            //
+            // 120 minutes against a longest observed TOTAL of 47m7s
+            // (MCDClient-Main #1377, 2026-09-02) is therefore an even looser
+            // margin than it reads, since the stage time inside that 47m7s is
+            // smaller again. Loose is the intent: a build-level timeout ABORTS,
+            // which publishes no junit and names no stage, so it is the worse
+            // of the two signals and should only ever fire for something the
+            // stage timeouts missed.
             timeout(time: 120, unit: 'MINUTES')
         }
 
