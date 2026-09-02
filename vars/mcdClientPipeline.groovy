@@ -361,16 +361,23 @@ def call(Map config) {
                         // whatever the run produced, and the notification names
                         // "GDScript Tests" instead of a bare ABORTED.
                         //
-                        // 45 minutes, sized from measurement rather than taste.
-                        // The longest healthy run observed is 20m45s
-                        // (MCDClient-FeatureCard #219, 2026-09-02), on a build
-                        // where the parallel MCDCoreExt Linux Release branch
-                        // took 10m41s against 3m56s in #1377, so agent
-                        // contention alone moves this stage by more than 2x.
-                        // 30 minutes was the first proposal and is only 1.4x
-                        // the worst observed, which is close enough to turn a
-                        // loaded agent into a red build. A control that cries
-                        // wolf gets removed.
+                        // 30 minutes. Every healthy run of this stage measured
+                        // on 2026-09-02:
+                        //
+                        //   MCD-PR-Main          #2112    9m52s
+                        //   MCDClient-FeatureCard #218   12m20s
+                        //   MCDClient-Main       #1377   15m43s
+                        //   MCDClient-FeatureCard #219   20m45s
+                        //
+                        // so this is 1.4x the slowest observed. That is thinner
+                        // than it looks, because #219's parallel MCDCoreExt
+                        // Linux Release branch took 10m41s against 3m56s in
+                        // #1377: agent contention alone moves work in this
+                        // stage by more than 2x, and the 20m45s end of the
+                        // range is what a loaded agent already produces. If
+                        // this starts reddening healthy builds, that is the
+                        // measurement to re-take, and the number to raise (45
+                        // minutes was the alternative considered).
                         //
                         // The underlying crash is separately addressed in
                         // MCDClient by not initializing the Sentry SDK in
@@ -378,7 +385,7 @@ def call(Map config) {
                         // exit at all. This timeout is the part that does not
                         // care WHY the stage hung.
                         options {
-                            timeout(time: 45, unit: 'MINUTES')
+                            timeout(time: 30, unit: 'MINUTES')
                         }
                         steps {
                             script { env.BUILD_PHASE = 'GDScript Tests' }

@@ -44,8 +44,8 @@ question about those files, not about the pipelines they call.
 
 ## Decision
 
-**The `GDScript Tests` stage carries its own timeout in both pipelines**: 45 minutes
-in `mcdClientPipeline`, 30 minutes in `mcdPRValidationPipeline`.
+**The `GDScript Tests` stage in `mcdClientPipeline` carries its own timeout**, of 30
+minutes.
 
 **`mcdClientPipeline` also gains a build-level `timeout(time: 120, unit: 'MINUTES')`**,
 deliberately looser than the stage deadline, as a backstop for a hang in a stage
@@ -63,22 +63,44 @@ the suite produced is still published, and the Discord notification names
 So the build-level number must never be the one that fires on a merely slow build,
 and `test_build_level_backstop_is_looser_than_the_stage_deadline` pins that ordering.
 
-### Why 45 minutes and not the 30 first proposed
+### 30 minutes, and the argument for 45 that was not taken
 
-Measured, not chosen. The longest healthy run of this stage observed is **20m45s**
-(`MCDClient-FeatureCard` #219, 2026-09-02). That build's parallel
-`MCDCoreExt Linux Release` branch took 10m41s against 3m56s in `MCDClient-Main`
-#1377, so agent contention alone moves work in this stage by more than 2x. 30
-minutes is 1.4x the worst observed: close enough that a loaded agent produces a red
-build, and a control that cries wolf gets removed by the third false alarm.
+Every healthy run of this stage measured on 2026-09-02:
 
-The PR job's copy takes 30 minutes because it is a different measurement: **9m52s**
-(`MCD-PR-Main` #2112, 2026-09-02), and because it must stay under that pipeline's
-existing 45-minute build-level cap so the stage is always the thing that reports.
+| job | build | GDScript Tests |
+|---|---|---|
+| `MCD-PR-Main` | #2112 | 9m52s |
+| `MCDClient-FeatureCard` | #218 | 12m20s |
+| `MCDClient-Main` | #1377 | 15m43s |
+| `MCDClient-FeatureCard` | #219 | **20m45s** |
+
+30 minutes is 1.4x the slowest of those. That margin is thinner than it looks: #219's
+parallel `MCDCoreExt Linux Release` branch took 10m41s against 3m56s in #1377, so
+agent contention alone moves work in this stage by more than 2x, and the 20m45s end
+of the range is what a loaded agent already produces.
+
+45 minutes was considered on that basis and not taken. 30 is the number chosen, on
+the grounds that it still turns an 11-hour wedge into a half-hour one and that a
+false red is visible and cheap to correct while a silent 30-minute-too-loose window
+is not. The measurement to re-take, if healthy builds start going red, is the one in
+the table, and the number to raise is this one.
 
 `test/unit/test_gdscript_stage_has_a_deadline.py` pins a floor of 25 minutes and a
-ceiling of 90, with those measurements written into the failure messages, so the
-next person to tune this is arguing with numbers rather than taste.
+ceiling of 90, with those measurements written into the failure messages, so the next
+person to tune this is arguing with numbers rather than taste.
+
+### Why `mcdPRValidationPipeline` is deliberately left alone
+
+It carries the same stage, and it does **not** get a stage timeout here. It already
+has a build-level `timeout(45, MINUTES)`, so a hang there ends in 45 minutes rather
+than never; its measured run is the fastest of the four (9m52s); and it is one job
+serving every open PR at once, so any new control there has a blast radius the branch
+jobs do not. Adding one is a separate decision with separate evidence.
+
+`test_pr_pipeline_still_relies_on_its_build_level_timeout` pins the premise that
+argument rests on. If that build-level timeout ever disappears, the PR job silently
+becomes as exposed as `mcdClientPipeline` was, and the decision has to be re-made
+rather than inherited.
 
 ### What this does not do
 
@@ -90,9 +112,10 @@ no human involved.
 
 ## Consequences
 
-- A hung `GDScript Tests` stage fails at 45 minutes (branch jobs) or 30 (PR job),
-  names itself, and publishes whatever junit exists.
+- A hung `GDScript Tests` stage in a client branch job fails at 30 minutes, names
+  itself, and publishes whatever junit exists.
 - A hang anywhere else in a client build ends it at 120 minutes as an ABORT.
-- The worst realistic cost of a genuine slow run is a red build at 2.2x the slowest
-  healthy time ever observed. If that starts happening, the number is wrong and the
-  test's failure message says which measurement to re-take.
+- The worst realistic cost of a genuine slow run is a red build at 1.4x the slowest
+  healthy time ever observed. That margin is the known risk of this change. If it
+  starts happening, the number is wrong, and the test's failure message says which
+  measurement to re-take.

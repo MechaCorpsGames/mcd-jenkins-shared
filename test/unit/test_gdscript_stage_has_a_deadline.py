@@ -44,21 +44,28 @@ _PR_SRC = _VARS / "mcdPRValidationPipeline.groovy"
 
 _STAGE = "GDScript Tests"
 
-# Longest healthy runs of this stage observed on 2026-09-02:
-#   MCDClient-FeatureCard #219   20m45s   (branch job, loaded agent)
-#   MCD-PR-Main          #2112    9m52s   (PR job)
-# A deadline under 25 minutes would sit inside the branch job's observed range
-# and turn agent contention into a red build.
+# Every healthy run of this stage observed on 2026-09-02:
+#   MCD-PR-Main           #2112    9m52s
+#   MCDClient-FeatureCard #218    12m20s
+#   MCDClient-Main        #1377   15m43s
+#   MCDClient-FeatureCard #219    20m45s
+# A deadline at or under the top of that range is not a deadline, it is a
+# flake generator, so the floor sits just above it.
 _MIN_STAGE_TIMEOUT_MINUTES = 25
 
 # Above this the control stops being one. 10h46m is what "no deadline" cost;
 # an hour and a half of a wedged executor is already an incident.
 _MAX_STAGE_TIMEOUT_MINUTES = 90
 
+# Only mcdClientPipeline. mcdPRValidationPipeline carries the same stage and is
+# deliberately left alone (mc-ezb8q): it already has a build-level
+# timeout(45, MINUTES), so a hang there ends in 45 minutes rather than never,
+# and that job serves every open PR at once. Adding a second control to it is a
+# separate decision with a separate blast radius.
 _SOURCES = pytest.mark.parametrize(
     "src_path",
-    [_CLIENT_SRC, _PR_SRC],
-    ids=["mcdClientPipeline", "mcdPRValidationPipeline"],
+    [_CLIENT_SRC],
+    ids=["mcdClientPipeline"],
 )
 
 
@@ -149,12 +156,12 @@ def test_stage_timeout_leaves_headroom_over_a_healthy_run(src_path: Path) -> Non
     for minutes in _timeout_minutes(body):
         assert minutes >= _MIN_STAGE_TIMEOUT_MINUTES, (
             f"{_STAGE} in {src_path.name} has a {minutes:g}m timeout, under "
-            f"the {_MIN_STAGE_TIMEOUT_MINUTES}m floor. The longest healthy run "
-            "measured is 20m45s (MCDClient-FeatureCard #219, 2026-09-02) on an "
-            "agent where the parallel MCDCoreExt Linux Release branch took "
-            "10m41s against 3m56s in MCDClient-Main #1377. Contention alone "
-            "moves this stage by more than 2x, and a control that reddens "
-            "healthy builds gets deleted. See mc-ezb8q."
+            f"the {_MIN_STAGE_TIMEOUT_MINUTES}m floor. Healthy runs measured on "
+            "2026-09-02 span 9m52s (MCD-PR-Main #2112) to 20m45s "
+            "(MCDClient-FeatureCard #219), and #219's parallel MCDCoreExt Linux "
+            "Release branch took 10m41s against 3m56s in MCDClient-Main #1377, "
+            "so contention alone moves this stage by more than 2x. A control "
+            "that reddens healthy builds gets deleted. See mc-ezb8q."
         )
 
 
@@ -244,4 +251,32 @@ def test_build_level_backstop_is_looser_than_the_stage_deadline() -> None:
         f"looser than the {_STAGE} stage timeout ({stage_level:g}m). The build "
         "would abort before the stage could fail and name itself. See "
         "mc-ezb8q."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The PR pipeline is deliberately NOT given a stage timeout
+# ---------------------------------------------------------------------------
+
+
+def test_pr_pipeline_still_relies_on_its_build_level_timeout() -> None:
+    """mcdPRValidationPipeline is left alone on purpose (mc-ezb8q).
+
+    It already carries a build-level timeout(45, MINUTES), so a hang there ends
+    in 45 minutes instead of never, and it is one job serving every open PR at
+    once. This pins the premise that argument rests on: if that build-level
+    timeout ever disappears, the PR job silently becomes as exposed as
+    mcdClientPipeline was, and this decision has to be re-made rather than
+    inherited.
+    """
+    values = _timeout_minutes(_options_block(_src(_PR_SRC)))
+    assert values, (
+        "mcdPRValidationPipeline lost its build-level timeout. That timeout is "
+        "the only reason its GDScript Tests stage was left without one of its "
+        "own. See mc-ezb8q."
+    )
+    assert max(values) <= 60, (
+        f"mcdPRValidationPipeline's build-level timeout is now {max(values):g}m. "
+        "Past an hour it stops bounding a hung GDScript stage usefully and the "
+        "stage needs its own deadline after all. See mc-ezb8q."
     )
