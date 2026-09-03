@@ -168,8 +168,10 @@ leave the other two open. A Jenkins restart and a human cancel produce the same
 
 ## Verification status
 
-`mcd-jenkins-shared` has no CI and no Groovy or Java runtime available locally,
-so nothing here executes the pipeline code. The evidence is:
+`mcd-jenkins-shared` has no CI, so no check in this repository runs on a push.
+Everything below was run by hand and the numbers are from those runs.
+
+The source-shape evidence is:
 
 - `test/unit/test_mcd_change_base_is_the_last_evaluated_build.py`, 19 cases,
   parsing the Groovy source, all observed failing against the unfixed tree
@@ -179,6 +181,70 @@ so nothing here executes the pipeline code. The evidence is:
   `NOT_BUILT` exclusion test, and moving the hand-started-build guard after the
   history walk reddens exactly the ordering test.
 - The full repo suite, 482 passed, 0 failed.
+
+**The helper is now executed, not only parsed (2026-09-03).** The first version
+of this ADR said no Groovy or Java runtime was available locally, and treated
+that as fixed. It was not: a JRE and Groovy 4.0.22 unpack into a scratch
+directory with no root and no change to the machine, and once they are there the
+file under test can simply be run.
+
+`test/groovy/mcd_change_base_behaviour.groovy` compiles `vars/mcdChangeBase.groovy`
+through a `GroovyShell` whose base script class supplies the two steps the helper
+calls, `echo` and `sh`. `sh` is not stubbed: it runs bash in a real git
+repository built for each case, so `usableBase()` and the older-of-the-two
+ordering answer to `git merge-base` rather than to a fake that agrees with them.
+`currentBuild` is a stand-in exposing `previousBuild`, `result` and
+`buildVariables`, and it records every read.
+
+21 cases, 0 failed. They cover the incident end to end (the anchor lands on
+#1149 and the widened diff surfaces `custom.tscn` while the old base hides it),
+the full verdict matrix including a still-running build, a run of `NOT_BUILT`
+builds, the three hand-started forms, both sides of the lookback bound, an
+unreadable build, a walk that throws, a base on an unrelated root, two unusable
+candidates, and a push that already reaches further back than the last build.
+Every one of the 19 `resolve()` calls additionally asserts the widening
+invariant: the base returned is `before_sha`, an ancestor of it, or null.
+
+Eight positive controls were run against the fixed tree, each reddening exactly
+the predicted cases and nothing else:
+
+| Mutation | Reddens |
+| --- | --- |
+| accept `NOT_BUILT` as evaluated | the incident, the `NOT_BUILT` case, the `NOT_BUILT` run (3) |
+| walk history before the hand-started guard | the three hand-started cases (3) |
+| `usableBase()` always true | the non-ancestor case, the two-unusable case (2) |
+| drop the older-of-the-two ordering | the already-wider push, on the invariant (1) |
+| lookback 20 to 5 | the just-inside-the-lookback case (1) |
+| drop the try/catch around a candidate read | the unreadable-build case (1) |
+| count a still-running build as evaluated | the still-running case (1) |
+| a syntax error in the helper | all 21 |
+
+Two of those (`usableBase()` always true, and dropping the ordering) are caught
+by the widening invariant rather than by a case-specific assertion, which is the
+evidence that the invariant assertion is load-bearing and not decoration.
+
+The first attempt at the hand-started-build control did not redden anything, and
+that is worth recording. The case originally proved the ordering by making the
+build history throw, which cannot work: `lastEvaluatedCommit()` catches exactly
+that exception by design, so the walk swallowed the probe and the case passed
+against code that consulted history first. It now asserts on recorded reads
+instead. A control that fails to fire is the only way to find a test shaped like
+that one.
+
+`test/unit/test_mcd_change_base_executes.py` wraps the harness for pytest. It
+skips when no Groovy runtime is present, since there is none on the dev boxes,
+and the skip reason says plainly that a skipped run proves nothing about
+behaviour. One test in that file never skips: it asserts the harness still
+exists and still carries the invariant assertion, because a deleted behaviour
+test and a skipped one look identical in a pytest summary and this repo has no
+CI to tell them apart.
+
+**What the executed harness still does not cover.** Jenkins runs pipeline code
+through the CPS transform and the script security sandbox, and its Groovy
+dialect is 2.4-flavoured rather than the 4.x used here. A construct that
+compiles under this harness can still be rejected in-sandbox or mistransformed
+by CPS. The helper deliberately stays inside the old dialect, but that is a
+property of how it was written, not something this harness checks.
 
 **Validated against the incident's own recorded build history (2026-09-03).**
 `MCDServer-Main` keeps 60 builds, so #1149 to #1152 were still in retention and
@@ -216,9 +282,9 @@ different value would be an earlier tip, which widens further.
 bead asks for a reproduction on a throwaway branch job (push A with a client
 change, push B with docs, abort A's build, confirm B's build detects
 `client=true`), and that has NOT been run. The section above applies the rule to
-real recorded results by hand; it does not show the controller running
-`resolve()`, and it does not show the new Groovy compiling or passing the script
-sandbox.
+real recorded results by hand, and the harness runs the code under plain Groovy;
+neither shows the controller running `resolve()`, and neither exercises the
+script sandbox or the CPS transform.
 
 That reproduction is blocked on job creation rather than on Jenkins being busy.
 `.Jenkins/JOBS.md` records that jobs here are created by hand in the controller

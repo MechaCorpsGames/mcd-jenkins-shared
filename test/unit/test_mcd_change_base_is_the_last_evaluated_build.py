@@ -48,6 +48,13 @@ WHAT THIS FILE PINS.
 
 Run with: pytest test/unit/test_mcd_change_base_is_the_last_evaluated_build.py
 No live Jenkins required. Tests parse Groovy source, plus one real git repo.
+
+THIS FILE ONLY PINS THE SOURCE SHAPE. Every assertion here passes against Groovy
+that does not compile and against a history walk that picks the wrong build. The
+other half is test/groovy/mcd_change_base_behaviour.groovy, which compiles
+vars/mcdChangeBase.groovy and calls resolve() for real; run it through
+test/unit/test_mcd_change_base_executes.py, which needs a Groovy runtime and
+skips loudly without one.
 """
 
 from __future__ import annotations
