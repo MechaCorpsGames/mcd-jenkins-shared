@@ -122,11 +122,19 @@ that does not serve, which is loud, rather than a live match destroyed silently.
 That asymmetry is why the exemption is opt-in by label rather than, say, a
 heuristic on the container name.
 
-**The `docker rm -f` semantics are cited, not verified here.** That it is a
-SIGKILL with no grace period is documented Docker behaviour. There is no Docker
-in the test harness and none on the box this was written on; `docker rm --help`
-on a deploy host confirms it in one line. The behaviour that *is* verified is
-which containers the sweep chooses to remove.
+**The `docker rm -f` semantics are now MEASURED, not cited.** This was carried as
+an inference for most of a day and has since been checked on the deploy host
+(192.168.50.165), which answers in its own words:
+
+```
+-f, --force     Force the removal of a running container (uses SIGKILL)
+```
+
+So the sweep's action on a drainer really is a SIGKILL with no grace period, and
+the case for exempting it does not rest on a documentation reading. What is still
+*not* verified here is Docker's runtime behaviour under the test harness, where
+`docker` is a fake answering from a fixture: what that harness proves is which
+containers the sweep chooses to remove.
 
 ## Alternatives considered
 
