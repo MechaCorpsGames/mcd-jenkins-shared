@@ -85,6 +85,36 @@ preference.** If the orchestration starts creating drainers while the sweep stil
 `docker rm -f`s them, every deploy destroys the container holding the live
 matches: worse than the current forced teardown at 900 seconds.
 
+**An isolation test cannot see its own callers, and that is why the source-shape
+assertions stay.** This is the general lesson and it outlives the Jenkins detail.
+
+The behaviour harness compiles this helper, calls it, and runs the shell it
+returns against a fake `docker`. It is a real execution test and it is the
+stronger evidence about what the sweep *does*. It is also completely blind to
+whether `mcdServerPipeline` calls the helper at all.
+
+Measured, not asserted: reverting ONE of the two call sites to inline shell, which
+is the precise defect this change exists to prevent, left that harness **fully
+green at 11 passed**. Only `body.count("mcdPortSweep(") == 2` in
+`test_mcd_port_sweep_exempts_drainers.py` went red.
+
+So the two kinds of test see different failures and neither is the lesser one:
+
+> **If the defect you fear is "the right code stops being called", no amount of
+> testing that code will find it.**
+
+Execution proves the unit behaves. Only a source or wiring check proves the unit
+is reached, and reached from the right number of places. That is a general
+property of isolation tests, not a quirk of Groovy or of a repo without CI, and
+it is the same shape as the bug the parent bead exists to fix: mc-r15kh's whole
+title is that the SIGUSR1 hot-swap already exists and nothing invokes it. Code
+that works and is never called is the failure mode of this entire line of work,
+at every level from a signal handler to a helper function.
+
+The consequence for review: the cheap regex test in this change is not redundant
+padding around the real one, and its docstring says which property it holds that
+the executed harness cannot, so it does not get deleted as duplication later.
+
 **A new failure mode is introduced and it is worth naming.** A container
 mislabelled `mcd.role=drainer` now survives the sweep and can hold the port
 against a deploy. The blast radius is a proxy that fails to bind and a deploy
