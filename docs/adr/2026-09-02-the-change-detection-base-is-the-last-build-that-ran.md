@@ -223,13 +223,29 @@ Two of those (`usableBase()` always true, and dropping the ordering) are caught
 by the widening invariant rather than by a case-specific assertion, which is the
 evidence that the invariant assertion is load-bearing and not decoration.
 
-The first attempt at the hand-started-build control did not redden anything, and
-that is worth recording. The case originally proved the ordering by making the
-build history throw, which cannot work: `lastEvaluatedCommit()` catches exactly
-that exception by design, so the walk swallowed the probe and the case passed
-against code that consulted history first. It now asserts on recorded reads
-instead. A control that fails to fire is the only way to find a test shaped like
-that one.
+### The control that did not fire
+
+The first attempt at the hand-started-build control reddened nothing, and that
+is the part of this work worth carrying elsewhere.
+
+The case originally proved the ordering by making the build history **throw**,
+on the reasoning that a `resolve()` which walked first would surface the
+exception. It cannot work. `lastEvaluatedCommit()` catches exactly that
+exception by design, as its documented fail-open, so the walk swallowed the
+probe and the case passed against code that consulted history first and guarded
+second. It asserts on recorded reads now, and the mutant prints its own
+evidence: `[#2.previousBuild, #1.result, #1.buildVariables]`.
+
+Stated generally, because it is not specific to this file:
+
+> An exception-based probe is defeated by the fail-open error handling you WANT
+> in CI code, so the more resilient the code, the more thoroughly it hides a
+> test shaped like that. If your test's claim is "X did not happen" or "A ran
+> before B", assert on a recorded side effect, not on a throw.
+
+A control that fails to fire is the only way to find a test shaped like that
+one, and it is the hardest kind of negative result to notice, because a control
+that reddens nothing looks exactly like a run that went well.
 
 `test/unit/test_mcd_change_base_executes.py` wraps the harness for pytest. It
 skips when no Groovy runtime is present, since there is none on the dev boxes,
