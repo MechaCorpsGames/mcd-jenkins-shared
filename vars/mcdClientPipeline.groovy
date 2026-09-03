@@ -208,7 +208,13 @@ def call(Map config) {
                 steps {
                     script {
                         env.BUILD_PHASE = 'Detect Changes'
-                        def baseRef = env.before_sha
+                        // The base is the last build that actually REACHED A VERDICT on a tree,
+                        // not the previous push. An aborted build's commits would otherwise be
+                        // attributed to a build that never evaluated them, and the next push
+                        // would close over them unbuilt (bead mc-okhtp). resolve() returns null
+                        // when there is no trustworthy base, which routes us down the
+                        // build-everything branch just below.
+                        def baseRef = mcdChangeBase.resolve(env.before_sha)
                         if (!baseRef || baseRef.startsWith('0000000')) {
                             echo "No valid before SHA — building everything"
                             env.CLIENT_CHANGED = 'true'
