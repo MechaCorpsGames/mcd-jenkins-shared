@@ -123,11 +123,23 @@ boolean isSha(String value) {
 // inverts the trim: every build would stand down against its own ancestors and
 // nothing after the first commit of the day would ever be built.
 //
-// Fails open on absolutely everything. git exits 1 for "not an ancestor" and
-// 128 for an object that is not in the local store, and both mean "build it".
-// The missing-object case is not hypothetical or unwanted: a build whose
-// workspace does not contain the commit it owes is precisely the situation that
-// produced mc-k0z92, and refusing to trim there is the correct answer.
+// EXIT 1 AND EXIT 128 ARE DIFFERENT ANSWERS AND ARE TREATED THE SAME ON PURPOSE.
+// 1 is git saying "not an ancestor": the work is genuinely unbuilt. 128 is git
+// saying "I do not have that object", which is not a statement about the work at
+// all. It means the WORKSPACE is wrong, or at least not what this build assumed:
+// a force-push, a deleted branch, a shallow clone, or a checkout that never
+// reached the commit this build owes.
+//
+// The judgement, not a validation rule: an unnecessary build is cheap and a
+// skipped one is not. A build that runs when it did not have to costs one
+// executor slot. A build wrongly trimmed leaves a commit undeployed with nothing
+// coming to replace it, which is mc-k0z92 and cost half an hour of main going
+// unbuilt with a P0 fix inside it. So where containment cannot be PROVEN, it is
+// not assumed, whatever the reason it could not be proven.
+//
+// And 128 is specifically the shape of the incident: a workspace that does not
+// contain the commit it owes. Standing down there would be standing down on the
+// evidence that something is already wrong.
 boolean covers(String owed, String built) {
     if (!owed || !built) {
         return false

@@ -106,10 +106,21 @@ ADR its own amendment upholds.
 ### Fail open, on everything
 
 `covers()` returns false unless git exits 0. `git merge-base --is-ancestor` exits 1
-for "not an ancestor" and 128 for an object the local store does not have, and both
-mean build it. The missing-object case is not a corner to tolerate: a workspace that
-does not contain the commit it owes is exactly the situation this bead describes,
-and building is the right answer there.
+for "not an ancestor" and 128 for an object the local store does not have.
+
+**Treating those two the same is a decision, not a default.** They are different
+answers. Exit 1 says the work is genuinely unbuilt. Exit 128 says nothing about the
+work at all: it says the workspace is not what this build assumed, through a
+force-push, a deleted branch, a shallow clone, or a checkout that never reached the
+owed commit. The asymmetry of the costs settles it. A build that runs when it did
+not have to costs one executor slot. A build wrongly trimmed leaves a commit
+undeployed with nothing coming to replace it, which is this bead and cost half an
+hour of unbuilt main with a P0 fix inside it. So containment that cannot be PROVEN
+is not assumed, whatever the reason it could not be proven.
+
+Exit 128 is also specifically the shape of the incident, a workspace not containing
+the commit it owes, so standing down on it would be standing down on the evidence
+that something is already wrong.
 
 Both operands are interpolated into a shell command and both arrive from outside
 (one straight off a webhook payload), so anything that is not a bare hex sha is
