@@ -180,11 +180,48 @@ so nothing here executes the pipeline code. The evidence is:
   history walk reddens exactly the ordering test.
 - The full repo suite, 482 passed, 0 failed.
 
+**Validated against the incident's own recorded build history (2026-09-03).**
+`MCDServer-Main` keeps 60 builds, so #1149 to #1152 were still in retention and
+the rule could be checked against real data rather than against a reading of the
+API:
+
+- The two API reads this depends on are proven live. #1155
+  (`trimmed (built by #1154)`) and #1144 (`Trimmed: #1143 already built
+  2d47036`) show `candidate.result` and `candidate.buildVariables['BUILT_COMMIT']`
+  returning real values. #1144 is the informative one: #1143's display name is
+  `v0.2.1143 (d2d85cc)` while its `BUILT_COMMIT` was `2d47036`, confirming that
+  `BUILT_COMMIT` is the tip actually checked out rather than the webhook's
+  `commit_sha`.
+- #1150, the abort, ends `Still waiting to schedule task / Waiting for next
+  available executor / Hard kill! / Finished: ABORTED`. It never got an
+  executor, so it never reached Trim to Latest and recorded no `BUILT_COMMIT`.
+  Both exclusion conditions agree on it independently.
+- #1151 logged `Changed files (1) docs/plans/mc-5dcgd-deck-builder-overhaul.md`
+  and `server=false, client=false`. Its base is confirmed without the log head:
+  `git diff --name-only ad2e8573a d4f210a96` returns exactly that one file.
+- Applying the rule, the anchor is #1149 at `56ae238`. `git diff --name-only
+  56ae238 d4f210a96` returns **38 files**, including 15+ `Src/GameServer/` files
+  and `Src/Include/protocol_ext.h`. That last categorises as `shared`, so
+  `serverChanged`, `clientChanged` and `mcpGameServerChanged` all become true.
+  The unbuilt range on the server job contained a wire-format change.
+- #1152, Tim's manual re-trigger, ran every server stage, which closed the hole
+  by hand and independently confirms the manual-escape-hatch claim above.
+
+One number is inferred rather than read: #1149's `BUILT_COMMIT` could not be
+read directly (its log is 47 minutes long and only the tail is retrievable).
+`56ae238` is its display-name commit, corroborated by #1150's `before_sha`. A
+different value would be an earlier tip, which widens further.
+
 **What is still unverified**: the runtime behaviour on a real controller. The
 bead asks for a reproduction on a throwaway branch job (push A with a client
 change, push B with docs, abort A's build, confirm B's build detects
-`client=true`), and that has NOT been run. Jenkins was being drained on the
-night this was written and the fleet is under a standing instruction not to
-trigger builds. Until that reproduction happens, the claim that `resolve()`
-returns the right commit on a live controller rests on reading the API, not on
-observing it.
+`client=true`), and that has NOT been run. The section above applies the rule to
+real recorded results by hand; it does not show the controller running
+`resolve()`, and it does not show the new Groovy compiling or passing the script
+sandbox.
+
+That reproduction is blocked on job creation rather than on Jenkins being busy.
+`.Jenkins/JOBS.md` records that jobs here are created by hand in the controller
+UI, with no job-config-as-code in either repo. There is no sandbox job on the
+controller, every existing job loads `@Library('mcd-shared')` unpinned so none
+of them would load this branch, and an agent has no controller credentials.
