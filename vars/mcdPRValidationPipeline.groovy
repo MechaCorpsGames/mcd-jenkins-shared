@@ -166,6 +166,34 @@ def call(Map config) {
 
                         env.BUILD_GITHUB_USER = env.pr_author
 
+                        // Republish the trigger's identity variables into THIS
+                        // build's OWN environment, so that LATER builds can read
+                        // them back through RunWrapper.buildVariables (mc-k0z9l).
+                        //
+                        // buildVariables surfaces a build's PARAMETERS plus the env
+                        // a pipeline SET ITSELF. A GenericTrigger genericVariable is
+                        // neither. It is contributed to this build's environment
+                        // only, so env.pr_number reads fine here and comes back null
+                        // from candidate.buildVariables in the next build.
+                        //
+                        // That is not a theoretical gap. mcdPrSupersession is wired
+                        // into the when{} of every stage below and had NEVER ONCE
+                        // fired. Measured 2026-09-03: PR-3095 #2163 ran 37m7s to
+                        // SUCCESS through about thirty stage boundaries while #2164
+                        // and #2165 were running on the same PR; PR-3086 #2156 vs
+                        // #2158 and PR-3068 #2149 vs #2150 did the same thing.
+                        //
+                        // This mirrors the one cross-build read in this library that
+                        // demonstrably works: mcdRedundantBuild reads BUILT_COMMIT
+                        // off earlier builds, and trim() puts it there with
+                        // env.BUILT_COMMIT = head.
+                        //
+                        // Keep these assignments in Setup PR Info. It is the first
+                        // stage after checkout and it is ungated, so the variables
+                        // are recorded before any stage can consult them.
+                        env.PR_NUMBER = env.pr_number
+                        env.PR_HEAD_SHA = env.pr_head_sha
+
                         // Set pending status on GitHub
                         setGitHubStatus('pending', 'Validation started', statusContext)
                     }

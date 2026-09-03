@@ -65,8 +65,52 @@
 // Walks forward from this build rather than asking Jenkins for the job's build
 // list, because RunWrapper.getNextBuild() is a plain safe API and enumerating a
 // job's runs is not. The chain is bounded by buildDiscarder (20 builds).
+//
+// READ PR_NUMBER, NOT pr_number, AND THE DIFFERENCE IS THE WHOLE BUG (mc-k0z9l).
+// -----------------------------------------------------------------------------
+// This function used to read candidate.buildVariables['pr_number'] directly, and
+// on that reading it NEVER FIRED ONCE. buildVariables surfaces a build's
+// PARAMETERS plus the env a pipeline SET ITSELF; a GenericTrigger
+// genericVariable is neither, so pr_number is readable in its own build and
+// absent from every other build's view of it. `mine` was always set, `theirs`
+// was always null, no candidate ever matched, and every older build ran to
+// completion believing it was still current.
+//
+// Measured 2026-09-03, three independent overlaps in one night, older build
+// running to SUCCESS every time: PR-3095 #2163 (37m7s, roughly thirty stage
+// boundaries evaluated while #2164 and #2165 were live on the same PR), PR-3086
+// #2156 against #2158, PR-3068 #2149 against #2150.
+//
+// mcdPRValidationPipeline's 'Setup PR Info' now republishes the trigger values
+// as PR_NUMBER and PR_HEAD_SHA, which DOES land in buildVariables. The fallback
+// to the raw trigger name is kept deliberately: it costs one `?:` and it means
+// a build that started before this change, or any future caller wired without
+// the republish, degrades to the old always-null behaviour rather than throwing.
+// The PR number this build is validating. Prefers the value the pipeline
+// republished into its own environment, because that is the one another build
+// can see; falls back to the raw trigger variable, which is readable only from
+// inside the build that owns it. See the note on supersededBy().
+String identityOf(def build) {
+    if (build == currentBuild) {
+        return firstNonEmpty(env.PR_NUMBER, env.pr_number)
+    }
+    Map vars = build.buildVariables ?: [:]
+    return firstNonEmpty(vars['PR_NUMBER'], vars['pr_number'])
+}
+
+// The first of the given values that is a non-blank String, or null.
+String firstNonEmpty(Object... values) {
+    for (v in values) {
+        String s = v?.toString()?.trim()
+        if (s) {
+            return s
+        }
+    }
+    return null
+}
+
 String supersededBy() {
-    String mine = env.pr_number?.toString()?.trim()
+    String mine = identityOf(currentBuild)
     if (!mine) {
         return null
     }
@@ -81,8 +125,8 @@ String supersededBy() {
         String theirSha = null
         try {
             Map vars = candidate.buildVariables ?: [:]
-            theirs = vars['pr_number']?.toString()?.trim()
-            theirSha = vars['pr_head_sha']?.toString()?.trim()
+            theirs = firstNonEmpty(vars['PR_NUMBER'], vars['pr_number'])
+            theirSha = firstNonEmpty(vars['PR_HEAD_SHA'], vars['pr_head_sha'])
         } catch (Exception ignored) {
             theirs = null
         }
