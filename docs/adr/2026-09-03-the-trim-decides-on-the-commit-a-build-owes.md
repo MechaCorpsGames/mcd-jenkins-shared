@@ -138,7 +138,22 @@ refused rather than quoted. `==~` is already used for this purpose in
   builds end NOT_BUILT, and only SUCCESS counts. The related question of what
   `Detect Changes` compares against is a different check and is tracked separately
   as mc-okhtp.
+- **The fix makes the helper depend on something it does not own**, and that needs
+  a caller-side test, not a better helper test. `trim()` reads `env.commit_sha`,
+  contributed by each pipeline's own GenericTrigger from `$.after`, and it falls
+  back to HEAD when the variable is absent so that a caller without a webhook keeps
+  working. A pipeline that drops or rebinds that key therefore returns to comparing
+  checked-out commits, which is this bead, while every test of the helper stays
+  green. Demonstrated rather than asserted: removing the key from one pipeline
+  reddens only the caller test, 2 of 10, and leaves all 33 helper and pipeline tests
+  passing. `test_mcd_trim_callers_publish_the_owed_commit.py` pins it, deriving the
+  pipeline list from which files call `trim()` so a sixth caller is covered the day
+  it is added. This follows the mayor's retraction of 2026-09-03: an isolation test
+  cannot see its own callers, so "the right code stops being called with what it
+  needs" is not a failure any amount of testing that code will find.
+
 - Nothing here is compile checked. There is no groovy, groovyc or java on the box
-  and this repo has no CI, so the evidence is the pytest suite: 480 passed,
-  including 10 new ones, and the 9 of those 10 that were observed failing against
-  the unfixed helper.
+  and this repo has no CI, so the evidence is the pytest suite: 490 passed,
+  including 20 new ones. Nine of the ten helper tests were observed failing against
+  the unfixed helper, and the ten caller tests were observed failing against two
+  deliberate caller breaks.
