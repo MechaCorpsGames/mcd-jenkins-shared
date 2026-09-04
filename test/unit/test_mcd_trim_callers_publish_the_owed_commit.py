@@ -37,11 +37,25 @@ _OWED_VAR = "commit_sha"
 _OWED_JSONPATH = "$.after"
 
 
+def _uncommented(src: str) -> str:
+    """Source with `//` comment tails removed.
+
+    Discovery has to do this too, not just the assertions. Files in vars/ discuss
+    each other in prose: `mcdChangeBase.groovy` arrived on 2026-09-04 with the
+    line "// mcdRedundantBuild.trim(), which writes it whether or not that build
+    is", and a raw substring search read that comment as a call and demanded a
+    GenericTrigger from a helper that has none. Caught only by re-running against
+    a base that had moved. A shape scan over-reports unless it is told what code
+    is.
+    """
+    return "\n".join(re.sub(r"//.*$", "", line) for line in src.splitlines())
+
+
 def _trim_callers() -> list[Path]:
     callers = sorted(
         path
         for path in _VARS.glob("*.groovy")
-        if "mcdRedundantBuild.trim()" in path.read_text()
+        if "mcdRedundantBuild.trim()" in _uncommented(path.read_text())
     )
     assert callers, (
         "no pipeline in vars/ calls mcdRedundantBuild.trim(). Either the trim was "
