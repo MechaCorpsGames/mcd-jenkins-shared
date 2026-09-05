@@ -50,15 +50,24 @@ def test_no_inline_copy_of_the_sweep_survives():
     )
 
 
-def test_the_exemption_is_specifically_the_drainer_role():
+def test_the_exemption_is_keyed_on_the_drainer_NAME_not_a_label():
+    """The rule changed with mc-r15kh 3a, and the old rule was inert.
+
+    This first shipped keying on a mcd.role=drainer LABEL. Docker sets labels at
+    creation and has no command to add one to a running container, while a
+    drainer is by necessity the pre-existing container holding the live sockets.
+    So no container could ever carry it and the exemption matched nothing. A
+    drainer is now recognised by the name 3a renames it to.
+    """
     helper = _HELPER.read_text()
-    assert 'index .Config.Labels "mcd.role"' in helper, (
-        "the sweep no longer reads the mcd.role label, so nothing is exempt and a "
-        "drainer will be docker rm -f'd mid-match (mc-r15kh blocker A)"
+    assert "${keepName}-drainer-*)" in helper, (
+        "the sweep no longer recognises a drainer by name, so nothing is exempt and "
+        "a drainer will be docker rm -f'd mid-match (mc-r15kh blocker A)"
     )
-    # The helper is a Groovy GString, so shell dollars are escaped in the source.
-    assert r'"\$role" = "drainer"' in helper, (
-        "the exemption is no longer keyed on the drainer role"
+    assert 'index .Config.Labels "mcd.role"' not in helper, (
+        "the label check is back. It is not belt-and-braces: an 'or' widens the "
+        "exemption, and a wider exemption means more containers survive a sweep whose "
+        "job is to clear squatters. One rule, and it is the name."
     )
 
 
