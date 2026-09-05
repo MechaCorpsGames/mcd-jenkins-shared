@@ -1,7 +1,8 @@
 // vars/mcdRedundantBuild.groovy
 //
-// Answers "has an earlier build of this job already built this exact commit,
-// successfully?" for the branch pipelines (bead mc-waxw).
+// Answers "is the commit this build was QUEUED FOR already contained in a commit
+// an earlier build of this job built successfully?" for the branch pipelines
+// (beads mc-waxw, mc-k0z92).
 //
 // Tim, 2026-08-25: "for all builds other than PR builds we should be trimming to
 // latest."
@@ -40,14 +41,36 @@
 // WHAT THIS DOES INSTEAD: LOOK BACKWARDS, NOT FORWARDS
 // ---------------------------------------------------
 // A queued build cannot see the builds behind it, but by the time it starts it
-// can see what the builds AHEAD of it did. And a Jenkins branch build checks out
-// the branch TIP, not the commit its webhook carried, so three builds queued
-// behind one another all check out the same commit and do identical work.
+// can see what the builds AHEAD of it did.
 //
-// So: record the commit each build actually checked out, and skip when an
-// earlier build of this job already built that same commit and SUCCEEDED. A
-// burst of five pushes becomes one real build of the newest commit and four
-// visible no-ops, which is what "trimming to latest" means here.
+// So: record the commit each build actually checked out (BUILT_COMMIT), and skip
+// when an earlier build of this job already built a commit that CONTAINS the one
+// this build owes, and SUCCEEDED. A burst of five pushes becomes one real build
+// of the newest commit and four visible no-ops, which is what "trimming to
+// latest" means here.
+//
+// TWO DIFFERENT COMMITS, AND CONFUSING THEM IS WHAT WENT WRONG (mc-k0z92)
+// ----------------------------------------------------------------------
+// A build has a commit it is ACCOUNTABLE FOR, which is the one its webhook
+// carried (env.commit_sha, GenericTrigger's $.after), and a commit it ACTUALLY
+// CHECKED OUT, which is whatever `checkout scm` resolved. The first version of
+// this file read only the second one, for both sides of the comparison, and
+// compared them with ==.
+//
+// That is sound only while every queued build checks out the same tip. When it
+// does not, two builds accountable for DIFFERENT commits can check out the SAME
+// commit, the == fires, and the newer build's work is skipped by a build that
+// never contained it. Observed on MCDClient-Main 2026-08-29: #1321, queued for
+// 434540193, stood itself down against #1320, which had built 16c3218. Verified
+// afterwards with `git merge-base --is-ancestor`: not one of the five pull
+// requests merged after that commit was in it, so for roughly half an hour there
+// was no client build containing that day's later work, including a P0 fix.
+//
+// The test is therefore CONTAINMENT of the owed commit, not equality of the
+// checked-out one: `git merge-base --is-ancestor owed built`. It is strictly
+// safer than == in the direction that matters (a commit that is not contained is
+// always built) and strictly more useful in the other (a build accountable for
+// an older commit is correctly trimmed against a newer build that contains it).
 //
 // It never interrupts anything. Nothing is aborted, no running build is touched,
 // and the skip happens before any publish step, so the rsync exclusion above is
@@ -56,15 +79,18 @@
 // THE SAFETY PROPERTY WORTH KEEPING WHEN EDITING THIS
 // --------------------------------------------------
 // It only ever skips work that has ALREADY BEEN DONE, successfully, by this same
-// job, on this same commit. That makes both failure directions safe:
+// job, on a commit that CONTAINS this build's own. That makes both failure
+// directions safe:
 //
 //   * If it under-fires (buildVariables comes back empty, the previous build
-//     predates this change, anything at all goes wrong) nothing is skipped and
-//     the pipeline behaves exactly as it does today. That is also why the first
-//     builds after this merges will not trim: no earlier build recorded a
-//     commit. It starts working on its own.
-//   * If it fires, the artifacts for that commit were already built and
-//     published by the build it points at.
+//     predates this change, a commit is not in the local object store, git
+//     errors, anything at all goes wrong) nothing is skipped and the pipeline
+//     behaves exactly as it does today. That is also why the first builds after
+//     this merges will not trim: no earlier build recorded a commit. It starts
+//     working on its own. Every failure path in `covers` returns false for this
+//     reason: only a clean exit 0 from git is allowed to skip work.
+//   * If it fires, the tree this build would have built is already inside the
+//     tree the build it points at built and published.
 //
 // A "newest wins" scheme that skipped on the presence of a NEWER build would not
 // have that property: if the newest build's webhook were ever lost, every build
@@ -78,9 +104,70 @@
 // from what the last build left. Skipping that would break the one case where a
 // person is watching.
 
-// The build number of an earlier build of this job that already built
-// `commitSha` and succeeded, as a String, or null when this build has real work
-// to do.
+// A commit sha this is willing to hand to git. Both operands reach `covers` from
+// outside: `owed` is lifted straight off a webhook payload (GenericTrigger's
+// $.after) and `built` out of another build's environment, and both are
+// interpolated into a shell command. Anything that is not a bare hex sha is
+// refused rather than quoted, which fails open into a normal build.
+boolean isSha(String value) {
+    return value ==~ /[0-9a-fA-F]{7,40}/
+}
+
+// True when `built` already contains `owed`: same commit, or `owed` is an
+// ancestor of it.
+//
+// This is the whole fix for mc-k0z92 and the one line worth re-reading before
+// editing. ORDER MATTERS AND IS NOT SYMMETRIC. `git merge-base --is-ancestor A B`
+// asks whether A is an ancestor of B, so the commit this build OWES goes first
+// and the commit an earlier build ACTUALLY BUILT goes second. Swapping them
+// inverts the trim: every build would stand down against its own ancestors and
+// nothing after the first commit of the day would ever be built.
+//
+// EXIT 1 AND EXIT 128 ARE DIFFERENT ANSWERS AND ARE TREATED THE SAME ON PURPOSE.
+// 1 is git saying "not an ancestor": the work is genuinely unbuilt. 128 is git
+// saying "I do not have that object", which is not a statement about the work at
+// all. It means the WORKSPACE is wrong, or at least not what this build assumed:
+// a force-push, a deleted branch, a shallow clone, or a checkout that never
+// reached the commit this build owes.
+//
+// The judgement, not a validation rule: an unnecessary build is cheap and a
+// skipped one is not. A build that runs when it did not have to costs one
+// executor slot. A build wrongly trimmed leaves a commit undeployed with nothing
+// coming to replace it, which is mc-k0z92 and cost half an hour of main going
+// unbuilt with a P0 fix inside it. So where containment cannot be PROVEN, it is
+// not assumed, whatever the reason it could not be proven.
+//
+// And 128 is specifically the shape of the incident: a workspace that does not
+// contain the commit it owes. Standing down there would be standing down on the
+// evidence that something is already wrong.
+boolean covers(String owed, String built) {
+    if (!owed || !built) {
+        return false
+    }
+    // Answered without shelling out, and deliberately BEFORE the sha check and
+    // the git call. This is the case the trim already handled before mc-k0z92,
+    // and keeping it first means the burst it exists for still trims even where
+    // `merge-base` cannot answer, a shallow clone being the obvious example.
+    if (owed == built) {
+        return true
+    }
+    if (!isSha(owed) || !isSha(built)) {
+        echo "Not trimming: '${owed}' or '${built}' is not a commit sha."
+        return false
+    }
+
+    int status = 1
+    try {
+        status = sh(script: "git merge-base --is-ancestor ${owed} ${built}", returnStatus: true)
+    } catch (Exception ignored) {
+        return false
+    }
+    return status == 0
+}
+
+// The build number of an earlier build of this job that already built a commit
+// containing `commitSha` and succeeded, as a String, or null when this build has
+// real work to do.
 String builtBy(String commitSha) {
     if (!commitSha) {
         return null
@@ -117,7 +204,11 @@ String builtBy(String commitSha) {
         // SUCCESS only. A build still running might yet fail, and a failed or
         // NOT_BUILT build did not necessarily publish anything, so neither is
         // evidence that the work is done.
-        if (theirs && theirs == commitSha && theirResult == 'SUCCESS') {
+        //
+        // The SUCCESS test is deliberately evaluated BEFORE covers(), which
+        // shells out: a candidate that did not succeed cannot trim this build
+        // whatever it contains, so there is nothing to ask git about.
+        if (theirs && theirResult == 'SUCCESS' && covers(commitSha, theirs)) {
             return candidate.number.toString()
         }
 
@@ -151,11 +242,28 @@ boolean trim() {
     // Written whether or not this build is trimmed, and read by LATER builds
     // through RunWrapper.buildVariables. This is the whole state this mechanism
     // keeps: no file, no lock, no plugin.
+    //
+    // This records what was ACTUALLY CHECKED OUT, which is what a later build
+    // needs to know: the question it will ask is "did that build's tree contain
+    // my commit?", and only the checked-out commit answers it.
     env.BUILT_COMMIT = head
 
-    String earlier = builtBy(head)
+    // ...whereas the commit this build must ACCOUNT FOR is the one its webhook
+    // carried. All five branch pipelines publish it as `commit_sha` from
+    // GenericTrigger's $.after. Reading `head` for both sides of the comparison
+    // is what let #1321 trim against a build that did not contain its work
+    // (mc-k0z92).
+    //
+    // Falling back to `head` keeps a caller with no webhook variable behaving
+    // exactly as it does today rather than trimming on something unrelated.
+    String owed = (env.commit_sha ?: '').trim() ?: head
+    if (owed != head) {
+        echo "Queued for ${owed.take(7)}, checked out ${head.take(7)}."
+    }
+
+    String earlier = builtBy(owed)
     if (!earlier) {
-        echo "Building ${head.take(7)} (no earlier build of this job has built it)."
+        echo "Building ${head.take(7)} (no earlier build of this job contains ${owed.take(7)})."
         return false
     }
 
@@ -168,9 +276,9 @@ boolean trim() {
     // did nothing.
     currentBuild.displayName = "#${BUILD_NUMBER} trimmed (built by #${earlier})"
     currentBuild.description =
-        "${currentBuild.description ?: ''}\n⏭️ Trimmed: #${earlier} already built ${head.take(7)}"
+        "${currentBuild.description ?: ''}\n⏭️ Trimmed: #${earlier} already contains ${owed.take(7)}"
     currentBuild.result = 'NOT_BUILT'
-    echo "Trimmed: build #${earlier} already built ${head.take(7)} for this job and succeeded. Skipping the work."
+    echo "Trimmed: build #${earlier} already built a commit containing ${owed.take(7)} for this job and succeeded. Skipping the work."
 
     return true
 }
