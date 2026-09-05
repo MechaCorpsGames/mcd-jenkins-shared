@@ -1480,16 +1480,7 @@ ENVEOF
                                 sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
                                 sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
 
-                                # Kill any Docker container holding our target TCP or WS port (host networking)
-                                for cid in \$(docker ps -q --filter 'network=host'); do
-                                    cname=\$(docker inspect --format '{{.Name}}' "\$cid" | sed 's|^/||')
-                                    if [ "\$cname" = "${containerName}" ]; then continue; fi
-                                    cmd=\$(docker inspect --format '{{join .Config.Cmd " "}}' "\$cid" 2>/dev/null || true)
-                                    if echo "\$cmd" | grep -qE '(^|\\s)${config.tcpPort}(\\s|\$)'; then
-                                        echo "Removing container \$cname holding port ${config.tcpPort}"
-                                        docker rm -f "\$cid" 2>/dev/null || true
-                                    fi
-                                done
+${mcdPortSweep(tcpPort: config.tcpPort, keepName: containerName)}
                                 docker rm -f ${containerName} 2>/dev/null || true
 
                                 # Compose DEFINITION from the workspace (so command args and
@@ -1551,16 +1542,7 @@ ENVEOF
                                     sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
                                     sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
 
-                                    # Kill any Docker container holding our target TCP or WS port (host networking)
-                                    for cid in \$(docker ps -q --filter 'network=host'); do
-                                        cname=\$(docker inspect --format '{{.Name}}' "\$cid" | sed 's|^/||')
-                                        if [ "\$cname" = "${containerName}" ]; then continue; fi
-                                        cmd=\$(docker inspect --format '{{join .Config.Cmd " "}}' "\$cid" 2>/dev/null || true)
-                                        if echo "\$cmd" | grep -qE '(^|\\s)${config.tcpPort}(\\s|\$)'; then
-                                            echo "Removing container \$cname holding port ${config.tcpPort}"
-                                            docker rm -f "\$cid" 2>/dev/null || true
-                                        fi
-                                    done
+${mcdPortSweep(tcpPort: config.tcpPort, keepName: containerName)}
                                     docker rm -f ${containerName} 2>/dev/null || true
 
                                     cd /var/opt/mechacorpsgames/Src
