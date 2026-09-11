@@ -146,3 +146,28 @@ no human involved.
   healthy time ever observed. That margin is the known risk of this change. If it
   starts happening, the number is wrong, and the test's failure message says which
   measurement to re-take.
+
+## Amendment, 2026-09-11: the PR pipeline decision, re-made (mc-6mxk7)
+
+The section above left `mcdPRValidationPipeline` alone because its build-level
+`timeout(45, MINUTES)` bounded a hung stage, and pinned that premise with a 60-minute
+ceiling so the decision would be re-made, not inherited, if it moved. It moved.
+
+**Evidence.** The release path now runs the four-platform `MCDCoreExt` cross-compile
+after the tests. `MCD-PR-Release` #203, #204 and #205 were all cut off by the 45:
+#203 on a stalled `mirror.msys2.org` download, #204 mid-configure under load, and
+#205 on an **idle** agent with all 8941 test cases already green (log line 132155),
+then aborted in the cross-compile. `MCD-PR-Main` took 42 of its 45 minutes on PR
+#3250. The measured 9m52s this section relied on is no longer the PR job's runtime.
+
+**Decision (Tim, 2026-09-11).** The build-level timeout goes to 90 minutes. Past an
+hour it no longer bounds a hung `GDScript Tests` run usefully, so that stage gets the
+same 30-minute stage deadline `mcdClientPipeline` carries, for the same reason: a
+stage timeout fails and names the stage, where the build abort publishes nothing.
+`test_gdscript_stage_has_a_deadline.py` now holds both pipelines to the stage floor
+and ceiling, and pins the PR backstop at 60 minutes or more and looser than its stage
+deadline.
+
+**Blast radius, stated.** This job serves every open PR. A genuine hang in a stage
+other than `GDScript Tests` now holds an executor for up to 90 minutes instead of 45.
+That is the cost accepted in exchange for release validation being able to finish.

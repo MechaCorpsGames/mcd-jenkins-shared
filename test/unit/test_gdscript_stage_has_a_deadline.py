@@ -57,15 +57,16 @@ _MIN_STAGE_TIMEOUT_MINUTES = 25
 # an hour and a half of a wedged executor is already an incident.
 _MAX_STAGE_TIMEOUT_MINUTES = 90
 
-# Only mcdClientPipeline. mcdPRValidationPipeline carries the same stage and is
-# deliberately left alone (mc-ezb8q): it already has a build-level
-# timeout(45, MINUTES), so a hang there ends in 45 minutes rather than never,
-# and that job serves every open PR at once. Adding a second control to it is a
-# separate decision with a separate blast radius.
+# Both pipelines. mcdPRValidationPipeline was first left alone (mc-ezb8q), on the
+# premise that its build-level timeout(45, MINUTES) bounded a hung stage. That
+# timeout went to 90 on 2026-09-11 (mc-6mxk7) because the release path's
+# cross-compile no longer fit in 45, and past an hour it no longer bounds a hung
+# GDScript run usefully. So the PR stage carries its own deadline too, and is
+# held to the same floor and ceiling.
 _SOURCES = pytest.mark.parametrize(
     "src_path",
-    [_CLIENT_SRC],
-    ids=["mcdClientPipeline"],
+    [_CLIENT_SRC, _PR_SRC],
+    ids=["mcdClientPipeline", "mcdPRValidationPipeline"],
 )
 
 
@@ -255,28 +256,45 @@ def test_build_level_backstop_is_looser_than_the_stage_deadline() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The PR pipeline is deliberately NOT given a stage timeout
+# The PR pipeline's build-level backstop, re-made (mc-6mxk7)
 # ---------------------------------------------------------------------------
 
 
-def test_pr_pipeline_still_relies_on_its_build_level_timeout() -> None:
-    """mcdPRValidationPipeline is left alone on purpose (mc-ezb8q).
+def test_pr_pipeline_backstop_fits_a_slow_release_run() -> None:
+    """The decision this file used to inherit, re-made on evidence (mc-6mxk7).
 
-    It already carries a build-level timeout(45, MINUTES), so a hang there ends
-    in 45 minutes instead of never, and it is one job serving every open PR at
-    once. This pins the premise that argument rests on: if that build-level
-    timeout ever disappears, the PR job silently becomes as exposed as
-    mcdClientPipeline was, and this decision has to be re-made rather than
-    inherited.
+    mcdPRValidationPipeline was left alone at timeout(45, MINUTES) with a
+    ceiling of 60 (mc-ezb8q). Then the release path's four-platform cross-
+    compile stopped fitting: MCD-PR-Release #203, #204 and #205 were all cut
+    off at 45, #205 on an idle agent with all 8941 tests green. A build-level
+    timeout ABORTS, publishing nothing, so it must never be what fires on a
+    merely slow run. Hence at least 60.
     """
     values = _timeout_minutes(_options_block(_src(_PR_SRC)))
     assert values, (
-        "mcdPRValidationPipeline lost its build-level timeout. That timeout is "
-        "the only reason its GDScript Tests stage was left without one of its "
-        "own. See mc-ezb8q."
+        "mcdPRValidationPipeline lost its build-level timeout, so a hang in a "
+        "stage with no deadline of its own runs until a human notices. See "
+        "mc-ezb8q and mc-6mxk7."
     )
-    assert max(values) <= 60, (
-        f"mcdPRValidationPipeline's build-level timeout is now {max(values):g}m. "
-        "Past an hour it stops bounding a hung GDScript stage usefully and the "
-        "stage needs its own deadline after all. See mc-ezb8q."
+    for minutes in values:
+        assert minutes >= 60, (
+            f"mcdPRValidationPipeline's build-level timeout is {minutes:g}m. "
+            "The release path does not fit in 45 (MCD-PR-Release #205 was cut "
+            "off on an idle agent with every test green). See mc-6mxk7."
+        )
+
+
+def test_pr_pipeline_backstop_is_looser_than_its_stage_deadline() -> None:
+    """Past an hour the backstop needs the stage deadline under it (mc-6mxk7)."""
+    build_values = _timeout_minutes(_options_block(_src(_PR_SRC)))
+    stage_values = _timeout_minutes(_stage_body(_src(_PR_SRC), _STAGE))
+    assert build_values and stage_values, (
+        "mcdPRValidationPipeline is missing one of its two deadlines: "
+        f"build-level {build_values}, {_STAGE} {stage_values}. See mc-6mxk7."
+    )
+    assert min(build_values) > max(stage_values), (
+        f"mcdPRValidationPipeline's build-level timeout ({min(build_values):g}m) "
+        f"is not looser than the {_STAGE} stage timeout "
+        f"({max(stage_values):g}m). The build would abort before the stage "
+        "could fail and name itself. See mc-6mxk7."
     )

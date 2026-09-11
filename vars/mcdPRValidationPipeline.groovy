@@ -27,7 +27,15 @@ def call(Map config) {
 
         options {
             buildDiscarder(logRotator(numToKeepStr: '20'))
-            timeout(time: 45, unit: 'MINUTES')
+            // 90, NOT 45 (Tim, 2026-09-11, bead mc-6mxk7). The release path now
+            // runs the four-platform MCDCoreExt cross-compile after the tests,
+            // and 45 no longer fit it: MCD-PR-Release #203, #204 and #205 were
+            // all cut off at 45, and #205 ran on an IDLE agent with all 8941
+            // tests already green. MCD-PR-Main took 42 of 45 on #3250.
+            // This clock covers the stages only, not queue wait (see the ADR
+            // below). Past an hour it no longer bounds a hung GDScript run on
+            // its own, so that stage now carries its own 30-minute deadline.
+            timeout(time: 90, unit: 'MINUTES')
             // NO JOB-WIDE CONCURRENCY CONTROL, DELIBERATELY. Read this before
             // adding one back (bead mc-waxw).
             //
@@ -653,6 +661,14 @@ def call(Map config) {
             // survived the filter" is stated here as well as in the Makefile.
             stage('GDScript Tests') {
                 when { expression { env.PR_ALREADY_MERGED != 'true' && mcdPrSupersession.stillCurrent() && env.CLIENT_CHANGED == 'true' } }
+                // Its own deadline, added when the build-level timeout above
+                // went to 90 (mc-6mxk7). Same 30 minutes and same reasoning as
+                // mcdClientPipeline's (mc-ezb8q): a stage timeout FAILS the
+                // stage, so the post block still publishes junit and names it,
+                // where the build-level abort would publish nothing.
+                options {
+                    timeout(time: 30, unit: 'MINUTES')
+                }
                 steps {
                     sh '''#!/bin/bash
                         # -e is not optional. This body has a shebang, so Jenkins
