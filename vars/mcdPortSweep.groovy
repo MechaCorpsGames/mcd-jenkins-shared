@@ -1,7 +1,7 @@
 // vars/mcdPortSweep.groovy
 //
 // The shell that clears containers squatting on this environment's proxy port,
-// with ONE exemption: a container labelled mcd.role=drainer is left alone.
+// with ONE exemption: a drainer, recognised by its name, is left alone.
 //
 // WHY THIS IS A HELPER RATHER THAN INLINE SHELL (bead mc-58po4)
 // ------------------------------------------------------------
@@ -43,15 +43,26 @@
 // assert an unlabelled foreign squatter is still removed, so that regression
 // goes red rather than silent.
 //
-// WHY THE LABEL IS READ PER CONTAINER RATHER THAN FILTERED IN `docker ps`
-// ----------------------------------------------------------------------
-// `docker ps --filter label=...` selects containers that HAVE a label; there is
-// no negated label filter to express "everything except drainers". Reading the
-// label inside the loop with `docker inspect` is unambiguous, needs no filter
-// capability this code cannot verify, and matches how the loop already reads
-// .Name and .Config.Cmd. `{{index .Config.Labels "mcd.role"}}` prints
-// `<no value>` when the label or the map is absent, which is not "drainer", so
-// an unlabelled container takes the sweep path exactly as before.
+// HOW A DRAINER IS RECOGNISED, AND WHY IT IS NOT THE LABEL (mc-r15kh 3a)
+// ---------------------------------------------------------------------
+// This shipped keying on a `mcd.role=drainer` LABEL, and that was inert: Docker
+// sets labels at creation and has no command to add one to a running container,
+// while a drainer is by necessity THE PRE-EXISTING CONTAINER holding the live
+// sockets. That is the entire point of it. So no container could ever carry the
+// label and the exemption matched nothing.
+//
+// A drainer is now recognised by its NAME. Step 3a renames the outgoing
+// container to `<keepName>-drainer-<build>` before signalling it, which it has
+// to do anyway so compose can create a fresh `<keepName>`, so the rename is free
+// evidence and it is applied at exactly the moment the container becomes a
+// drainer.
+//
+// ONE RULE, NOT TWO. The label check is gone rather than kept alongside as
+// belt-and-braces. An `or` widens the exemption, and a wider exemption means
+// more containers survive a sweep whose job is to clear squatters. Every proxy
+// still carries `mcd.role=proxy` from compose, but that label is for the drain
+// reaper and its metrics (see docs/design/proxy_hot_swap_orchestration.md), not
+// for this decision.
 //
 // USAGE
 //   mcdDeployLock(deployPath: config.deployPath, """
@@ -83,16 +94,18 @@ def call(Map args = [:]) {
 
     return """
                                 # Kill any Docker container holding our target TCP or WS port (host networking).
-                                # EXCEPT a drainer: mcd.role=drainer is bleeding out live matches and
+                                # EXCEPT a drainer, which is bleeding out live matches and whose
                                 # docker rm -f would SIGKILL them (mc-r15kh blocker A, bead mc-58po4).
+                                # A drainer is `<keepName>-drainer-<build>`, the name step 3a gives it.
                                 for cid in \$(docker ps -q --filter 'network=host'); do
                                     cname=\$(docker inspect --format '{{.Name}}' "\$cid" | sed 's|^/||')
                                     if [ "\$cname" = "${keepName}" ]; then continue; fi
-                                    role=\$(docker inspect --format '{{index .Config.Labels "mcd.role"}}' "\$cid" 2>/dev/null || true)
-                                    if [ "\$role" = "drainer" ]; then
-                                        echo "Keeping drainer \$cname (mcd.role=drainer): it is bleeding out live matches"
-                                        continue
-                                    fi
+                                    case "\$cname" in
+                                        ${keepName}-drainer-*)
+                                            echo "Keeping drainer \$cname: it is bleeding out live matches"
+                                            continue
+                                            ;;
+                                    esac
                                     cmd=\$(docker inspect --format '{{join .Config.Cmd " "}}' "\$cid" 2>/dev/null || true)
                                     if echo "\$cmd" | grep -qE '(^|\\s)${tcpPort}(\\s|\$)'; then
                                         echo "Removing container \$cname holding port ${tcpPort}"

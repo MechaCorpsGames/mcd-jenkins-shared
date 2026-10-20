@@ -181,7 +181,7 @@ def script = loadHelper()
 def sweepWithInvariant = { Host host, String snippet ->
     Map r = host.sweep(snippet)
     assert r.rc == 0 : "the sweep exited ${r.rc}:\n${r.out}"
-    host.containers.findAll { it.role == 'drainer' }.each { d ->
+    host.containers.findAll { it.name.startsWith(KEEP + '-drainer-') }.each { d ->
         assert !r.removed.contains(d.name) :
             "DRAINER INVARIANT VIOLATED: ${d.name} was removed:\n${r.out}"
     }
@@ -189,19 +189,23 @@ def sweepWithInvariant = { Host host, String snippet ->
     return r
 }
 
-String PORT = '13069'
-String KEEP = 'mcd-main-proxy-1'
+// Untyped on purpose: a typed local is not visible to sweepWithInvariant, which
+// is defined above and has to know what a drainer is called.
+PORT = '13069'
+KEEP = 'mcd-main-proxy-1'
+// The name step 3a gives the outgoing container: <keepName>-drainer-<build>.
+DRAINER = "${KEEP}-drainer-4217"
 String snippet = script.call(tcpPort: PORT, keepName: KEEP)
 
 // --- 1. The bug this bead exists to prevent. --------------------------------
 check('a drainer holding the port is NOT removed') {
     Host h = Host.of([
-        [id: 'c1', name: 'mcd-main-proxy-drainer', role: 'drainer',
+        [id: 'c1', name: DRAINER, role: 'proxy',
          cmd: "/app/proxy -tcpport ${PORT} -wsport 13070"],
     ])
     Map r = sweepWithInvariant(h, snippet)
     assert r.removed == [] : "a bleeding-out drainer was destroyed: ${r.removed}"
-    assert r.out.contains('Keeping drainer mcd-main-proxy-drainer') :
+    assert r.out.contains("Keeping drainer ${DRAINER}") :
         "keeping a drainer silently is how this decision gets reverted by accident:\n${r.out}"
 }
 
@@ -231,7 +235,7 @@ check('a foreign compose project squatting on the port is still removed (637a43a
 // --- 4. Mixed host: the discrimination, not just the two ends. --------------
 check('on a mixed host only the unlabelled squatters go, and the drainer stays') {
     Host h = Host.of([
-        [id: 'c1', name: 'mcd-main-proxy-drainer', role: 'drainer', cmd: "/app/proxy -tcpport ${PORT}"],
+        [id: 'c1', name: DRAINER, role: 'proxy', cmd: "/app/proxy -tcpport ${PORT}"],
         [id: 'c2', name: 'legacy-squatter',        role: null,      cmd: "/app/proxy -tcpport ${PORT}"],
         [id: 'c3', name: KEEP,                     role: null,      cmd: "/app/proxy -tcpport ${PORT}"],
         [id: 'c4', name: 'unrelated-service',      role: null,      cmd: '/app/other -port 9999'],
@@ -251,21 +255,43 @@ check("the deploy's own container is never swept") {
 // --- 6. A drainer on a DIFFERENT port is still not this deploy's business. --
 check('a drainer not holding this port is left alone too') {
     Host h = Host.of([
-        [id: 'c1', name: 'other-env-drainer', role: 'drainer', cmd: '/app/proxy -tcpport 14069'],
+        [id: 'c1', name: DRAINER, role: 'proxy', cmd: '/app/proxy -tcpport 14069'],
     ])
     Map r = sweepWithInvariant(h, snippet)
     assert r.removed == [] : "removed a container that does not even hold this port: ${r.removed}"
 }
 
 // --- 7. A container with some other role label is NOT exempt. ---------------
-check('only mcd.role=drainer is exempt, not any labelled container') {
+// THE SEMANTIC CHANGE (mc-r15kh 3a). The exemption used to key on a
+// mcd.role=drainer LABEL, which was inert because Docker cannot label a running
+// container and a drainer is by necessity a pre-existing one. It now keys on the
+// NAME 3a gives it. This case pins that the old signal is no longer sufficient,
+// so a half-applied revert cannot pass.
+check('the mcd.role=drainer LABEL alone no longer exempts anything') {
     Host h = Host.of([
-        [id: 'c1', name: 'labelled-but-not-a-drainer', role: 'worker',
+        [id: 'c1', name: 'squatter-claiming-to-be-a-drainer', role: 'drainer',
          cmd: "/app/proxy -tcpport ${PORT}"],
     ])
     Map r = sweepWithInvariant(h, snippet)
-    assert r.removed == ['labelled-but-not-a-drainer'] :
-        "the exemption must be for drainers specifically, not for anything with a label: ${r.removed}"
+    assert r.removed == ['squatter-claiming-to-be-a-drainer'] :
+        "a container carrying the old label but NOT named as a drainer must be swept; " +
+        "the label was never settable on a running container and is not the rule: ${r.removed}"
+}
+
+// The prefix is anchored on THIS deploy's container name. A container whose name
+// merely contains 'drainer' is a squatter like any other, and exempting it would
+// hand anyone a way to survive the sweep by choosing a name.
+check('a name that merely contains "drainer" is not exempt') {
+    Host h = Host.of([
+        [id: 'c1', name: 'unrelated-drainer-7', role: 'proxy',
+         cmd: "/app/proxy -tcpport ${PORT}"],
+        [id: 'c2', name: "not-${KEEP}-drainer-1", role: 'proxy',
+         cmd: "/app/proxy -tcpport ${PORT}"],
+    ])
+    Map r = sweepWithInvariant(h, snippet)
+    assert r.removed.sort() == ['not-mcd-main-proxy-1-drainer-1', 'unrelated-drainer-7'] :
+        "the exemption is anchored on this deploy's own container name; a container " +
+        "must not escape the sweep by choosing a name: ${r.removed}"
 }
 
 // --- 8. Port matching is on whole tokens, as the original grep intended. ----

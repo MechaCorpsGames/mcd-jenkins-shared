@@ -1480,7 +1480,11 @@ ENVEOF
                                 sudo systemctl stop mcdproxy-release.service 2>/dev/null || true
                                 sudo systemctl disable mcdproxy-release.service 2>/dev/null || true
 
+${mcdDrainerHandoff(containerName: containerName, buildNumber: env.BUILD_NUMBER)}
 ${mcdPortSweep(tcpPort: config.tcpPort, keepName: containerName)}
+                                # After the handoff above this name refers to nothing, or to a
+                                # container that genuinely failed to become a drainer and whose
+                                # matches are already lost either way.
                                 docker rm -f ${containerName} 2>/dev/null || true
 
                                 # Compose DEFINITION from the workspace (so command args and
