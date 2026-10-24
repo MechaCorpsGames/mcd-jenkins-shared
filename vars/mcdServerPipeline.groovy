@@ -1257,6 +1257,10 @@ BOT_PASSWORD=${config.botPassword ?: ''}
 GAUNTLET_INSTANT_RESOLVE=${config.gauntletInstantResolve ?: ''}
 ENVEOF
                         """
+                        def jevKeyState = 'unconfigured'
+                        if (config.typesafeKeyFile) {
+                            jevKeyState = mcdJevProxy.appendKey(config.typesafeKeyFile.toString(), envFile) ? 'ready' : 'unusable'
+                        }
                         // Practice bots are spawned from BOT_PROJECT_ROOT, published by
                         // mcdClientPipeline's "Publish Bot Runtime" stage in a DIFFERENT
                         // job. Nothing ties the two together, so when an env's
@@ -1553,6 +1557,8 @@ ${mcdPortSweep(tcpPort: config.tcpPort, keepName: containerName)}
                             """)
                             env.PROXY_DEPLOYED = "false"
                         }
+                        // Read-only and outside the deploy lock, after all three outcomes.
+                        mcdJevProxy.check(config, containerName, jevKeyState)
                     }
                 }
             }
