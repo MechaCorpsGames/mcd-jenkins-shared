@@ -7,7 +7,7 @@ import org.codehaus.groovy.control.CompilerConfiguration
 def loader = new GroovyClassLoader(this.class.classLoader)
 def interruptedType = loader.parseClass('''
 package org.jenkinsci.plugins.workflow.steps
-class FlowInterruptedException extends Exception {}
+class FlowInterruptedException extends InterruptedException {}
 ''')
 loader.parseClass('package hudson; class AbortException extends IOException {}')
 def helperClass = loader.parseClass(new File('vars/mcdJevProxy.groovy'))
@@ -188,6 +188,13 @@ def envFile = '.env.proxy.fixture'
 ].each { name, value ->
     run('valid ' + name) { f ->
         f.key(value(f))
+        java.nio.file.Files.setPosixFilePermissions(new File(f.dir, envFile).toPath(),
+            java.nio.file.attribute.PosixFilePermissions.fromString('rw-r--r--'))
+        // Tighten the mode before any key bytes reach the file.
+        f.executable('chmod', '''#!/bin/sh
+if grep -q '^TYPESAFE_API_KEY=' "$2"; then exit 73; fi
+exec /bin/chmod "$@"
+''')
         assert f.helper.appendKey(keyFile, envFile)
         assert new File(f.dir, envFile).text == "EXISTING=fixture\nTYPESAFE_API_KEY=${f.canary}\n"
         assert java.nio.file.Files.getPosixFilePermissions(new File(f.dir, envFile).toPath()) ==
@@ -269,7 +276,7 @@ run('non-owner does not change env mode') { f ->
         assert new File(f.dir, 'curl-count').text == '1': 'a valid list must be judged once'
     }
 }
-['query_error', 'invalid_json', 'docker_error', 'library_error', 'remove_key'].each { failure ->
+['query_error', 'invalid_json', 'docker_error', 'remove_key'].each { failure ->
     run('soft check ' + failure) { f ->
         f.key("TYPESAFE_API_KEY=${f.canary}\n")
         f.probe.key = f.canary
@@ -280,6 +287,13 @@ run('non-owner does not change env mode') { f ->
         assert f.verdicts().size() == 1
         assert f.verdicts()[0].startsWith('WARN Jev check skipped:')
     }
+}
+run('unavailable library probe preserves the offered verdict') { f ->
+    f.key("TYPESAFE_API_KEY=${f.canary}\n")
+    f.probe += [key: f.canary, listed: true, library_error: true]
+    f.check('ready')
+    assert f.build.result == 'SUCCESS'
+    assert f.verdicts() == ['Jev: offered in /api/bots (WARN: bot libraries could not be checked)']
 }
 run('invalid list then valid list') { f ->
     f.probe.invalid_first = 2
@@ -359,8 +373,6 @@ run('leak scanner has positive controls') { f ->
 // Execute the actual stage's Groovy control flow. Existing shell mutations are
 // stubs, allowing comparison of their order and arguments without a deploy host.
 String branchSource = new File('vars/mcdServerPipeline.groovy').text
-String baseSource = ['git', 'show', 'origin/main:vars/mcdServerPipeline.groovy'].execute().text
-assert baseSource
 def executeStage = { String source, String route, Map options = [:] ->
     def f = new JevFixture(helperClass)
     f.route = route
@@ -400,18 +412,22 @@ def executeStage = { String source, String route, Map options = [:] ->
             f.events.add('lock')
             f.mutations.add(script.toString())
             f.console.add(route == 'changed' ? 'legacy restart' : route == 'recovery' ? 'legacy recovery' : 'legacy no-op')
-        }, mcdJevProxy: f.helper])
+        }, mcdJevProxy: options.withoutJev ?
+            new Expando(appendKey: { String keyPath, String envPath -> false },
+                        check: { Map cfg, String container, String state -> }) : f.helper])
     new GroovyShell(loader, binding).evaluate(code)
     return f
 }
 ['changed', 'recovery', 'noop'].each { route ->
-    def before = executeStage(baseSource, route)
+    // Compare the same stage with and without Jev, independent of git refs.
+    def before = executeStage(branchSource, route, [withoutJev: true])
     def after = executeStage(branchSource, route)
     try {
         assert new File(before.dir, envFile).bytes == new File(after.dir, envFile).bytes
         assert !new File(after.dir, envFile).text.contains('TYPESAFE')
         assert after.console == before.console + ['Jev: not offered on this environment (not configured)']
         assert after.mutations == before.mutations
+        assert before.events == ['lock']
         assert after.events == ['lock', 'check']
         assert !after.events.contains('append')
         if (System.getenv('MCD_JEV_EVIDENCE')) {
@@ -441,7 +457,7 @@ def stageCases = [
     [state: 'ready', probe: [invalid_json: true], result: 'SUCCESS', line: 'WARN Jev check skipped'],
     [state: 'ready', probe: [docker_error: true], result: 'SUCCESS', line: 'WARN Jev check skipped'],
     [state: 'ready', probe: [remove_key: true], result: 'SUCCESS', line: 'WARN Jev check skipped'],
-    [state: 'ready', probe: [listed: true, key: 'same', library_error: true], result: 'SUCCESS', line: 'WARN Jev check skipped'],
+    [state: 'ready', probe: [listed: true, key: 'same', library_error: true], result: 'SUCCESS', line: 'Jev: offered in /api/bots (WARN: bot libraries could not be checked)'],
     [state: 'ready', probe: [listed: true, key: 'same', libraries: 'missing'], result: 'UNSTABLE', line: 'unresolved shared libraries']
 ]
 ['changed', 'recovery', 'noop'].each { route ->

@@ -54,10 +54,10 @@ boolean appendKey(String keyFile, String envFile) {
         outcome = sh(script: '#!/bin/sh -e\nset +x\n' + keyReader() + '''
 if read_jev_key; then
     jev_env="/var/opt/mechacorpsgames/Src/$MCD_JEV_ENV_FILE"
-    printf 'TYPESAFE_API_KEY=%s\\n' "$jev_key" >> "$jev_env"
     if [ "$(stat -c %u "$jev_env")" = "$(id -u)" ]; then
         chmod 600 "$jev_env"
     fi
+    printf 'TYPESAFE_API_KEY=%s\\n' "$jev_key" >> "$jev_env"
     printf '%s' ready
 else
     printf '%s' "$jev_reason"
@@ -182,16 +182,16 @@ JEV_CHECK
             mcdUnstableReason(reasons[verdict])
             currentBuild.result = 'UNSTABLE'
             echo "Jev: deployment check failed (${reasons[verdict]})"
-        } else if (verdict == 'offered') {
-            echo 'Jev: offered in /api/bots'
+        } else if (verdict == 'offered' || verdict == 'warn-libraries') {
+            echo 'Jev: offered in /api/bots' +
+                (verdict == 'warn-libraries' ? ' (WARN: bot libraries could not be checked)' : '')
         } else if (verdict == 'not-offered') {
             echo "Jev: not offered on this environment (${keyState == 'unusable' ? 'key file unusable' : 'not configured'})"
         } else {
             def warnings = [
                 'warn-query': 'proxy did not return a valid bot list',
                 'warn-reread': 'key file changed or became unreadable',
-                'warn-container': 'container environment could not be checked',
-                'warn-libraries': 'bot libraries could not be checked'
+                'warn-container': 'container environment could not be checked'
             ]
             echo "WARN Jev check skipped: ${warnings[verdict] ?: 'probe returned an unknown result'}"
         }
