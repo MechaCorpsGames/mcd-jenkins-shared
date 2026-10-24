@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         openjdk-17-jdk-headless \
         mingw-w64 \
         python3 python3-pytest python-is-python3 rsync sudo \
-        zlib1g-dev libcurl4-openssl-dev \
+        zlib1g-dev libcurl4-openssl-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 # python-is-python3: several MCDClient Makefile test recipes invoke bare
 # `python` (make test-tutorial, test-smoke, test-e2e). Debian's python3
