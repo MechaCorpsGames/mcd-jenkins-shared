@@ -352,3 +352,202 @@ def test_build_system_case_triggers_both_builds() -> None:
         "'build-system' must set clientChanged: the Makefile carries the 'ext', "
         "'test-gdscript' and 'export-done' targets. See mc-lvzi."
     )
+
+
+# ---------------------------------------------------------------------------
+# Persona packs and playtester docs reach the MCP guard tests (mc-5gbyxt, mc-28l686)
+# ---------------------------------------------------------------------------
+#
+# mc-5gbyxt, from the architect ruling mc-28l686 (Finding 2), records that the
+# persona guard tests live in the MCP Game Server Go suite, which the PR
+# pipeline runs only when mcpGameServerChanged is set. Two path trees hold those
+# guards' inputs and neither set the flag. Running the real categorize() and
+# detect() under Groovy gave:
+#
+#   mcp/personas/**     matched no rule, so categorize() returned 'unknown' and
+#                       the unmatched-file fallback set serverChanged and
+#                       clientChanged but not mcpGameServerChanged.
+#   docs/playtester/**  matched the 'docs/' entry of the docPrefixes loop, so
+#                       categorize() returned 'docs' and no flag was set at all.
+#                       A PR that touches only these files is then docs-only,
+#                       because mcdPRValidationPipeline derives DOCS_ONLY from
+#                       the same flags.
+#
+# The ruled fix is two prefix rules that return 'mcp-game-server', placed after
+# the Src/MCPGameServer/ rule and ABOVE the docPrefixes loop: the 'docs/' entry
+# would otherwise capture 'docs/playtester/' first.
+#
+# Like the mc-lvzi tests above, these read the source rather than a Python
+# mirror, because a mirror would have to hand-copy the rule it is meant to
+# check. The first three are regression tests, written to fail on the library as
+# it stood before the rules existed. The last two are GUARDS: they pass before
+# and after the fix and pin what the fix must leave alone, so a green guard says
+# nothing about whether the fix is present.
+#
+# The rule tests pin the shape the acceptance criteria name: one executable
+# `if (filePath.startsWith('<prefix>')) return 'mcp-game-server'` line per
+# prefix. A combined `||` line or a prefix list would need these tests amended.
+
+_CATEGORIZE_DEF = re.compile(r"^def\s+categorize\s*\(", re.M)
+_DOC_PREFIXES_DEF = re.compile(r"^[ \t]*def\s+docPrefixes\b", re.M)
+
+
+def _categorize_source() -> str:
+    """The source from `def categorize(` on.
+
+    Searching here rather than the whole file means a rule that sits somewhere
+    else (in detect(), say) cannot satisfy a test about categorize().
+    """
+    src = _src()
+    start = _CATEGORIZE_DEF.search(src)
+    assert start is not None, (
+        "mcdChangeDetection.groovy no longer has a `def categorize(` function. "
+        "If the classifier was moved or renamed, update these tests. "
+        "See mc-5gbyxt."
+    )
+    return src[start.start():]
+
+
+def _prefix_rule(prefix: str, category: str) -> re.Pattern[str]:
+    """An executable `if (filePath.startsWith('<prefix>')) return '<category>'`.
+
+    Anchored to the start of a line with only blanks allowed before `if`, so a
+    `//` comment that quotes the rule cannot satisfy it. A trailing `;` or `//`
+    comment is allowed.
+    """
+    return re.compile(
+        r"^[ \t]*if\s*\(\s*filePath\.startsWith\(\s*['\"]"
+        + re.escape(prefix)
+        + r"['\"]\s*\)\s*\)\s*return\s+['\"]"
+        + re.escape(category)
+        + r"['\"][ \t]*;?[ \t]*(?://.*)?$",
+        re.M,
+    )
+
+
+def test_categorize_has_an_explicit_mcp_personas_rule() -> None:
+    """REGRESSION (mc-5gbyxt): a file under mcp/personas/ is an MCP game server file."""
+    rule = _prefix_rule("mcp/personas/", "mcp-game-server").search(_categorize_source())
+    assert rule is not None, (
+        "categorize() has no executable "
+        "`if (filePath.startsWith('mcp/personas/')) return 'mcp-game-server'` "
+        "line. Without it a persona pack file matches no rule, comes back "
+        "'unknown', and the unmatched-file fallback sets serverChanged and "
+        "clientChanged but NOT mcpGameServerChanged: a persona-only PR runs "
+        "the server and client suites and never the MCP Game Server tests that "
+        "guard the packs. A comment that quotes the rule does not count. "
+        "See mc-5gbyxt and mc-28l686."
+    )
+
+
+def test_categorize_has_an_explicit_docs_playtester_rule() -> None:
+    """REGRESSION (mc-5gbyxt): a file under docs/playtester/ is an MCP game server file."""
+    rule = _prefix_rule("docs/playtester/", "mcp-game-server").search(_categorize_source())
+    assert rule is not None, (
+        "categorize() has no executable "
+        "`if (filePath.startsWith('docs/playtester/')) return 'mcp-game-server'` "
+        "line. Without it the 'docs/' entry of the docPrefixes loop captures "
+        "the playtester docs, categorize() returns 'docs', no flag is set, and "
+        "a PR that changes only those files is docs-only and skips the MCP "
+        "Game Server tests that guard them. A comment that quotes the rule "
+        "does not count. See mc-5gbyxt and mc-28l686."
+    )
+
+
+def test_persona_and_playtester_rules_sit_above_the_docs_prefix_loop() -> None:
+    """REGRESSION (mc-5gbyxt): both rules must come before `def docPrefixes`.
+
+    The 'docs/' entry captures docs/playtester/ first, so a rule placed below
+    the loop never runs. Both rules must also EXIST before their order is
+    compared, or this test would pass vacuously on a file that has neither.
+    """
+    src = _categorize_source()
+    docs_loop = _DOC_PREFIXES_DEF.search(src)
+    assert docs_loop is not None, (
+        "categorize() no longer has a `def docPrefixes` line, so the order of "
+        "the rules cannot be checked. If the docs loop was restructured, update "
+        "this test. See mc-5gbyxt."
+    )
+    rules = {
+        prefix: _prefix_rule(prefix, "mcp-game-server").search(src)
+        for prefix in ("mcp/personas/", "docs/playtester/")
+    }
+    missing = [prefix for prefix, match in rules.items() if match is None]
+    assert not missing, (
+        f"No executable 'mcp-game-server' rule for: {', '.join(missing)}. Their "
+        "order against `def docPrefixes` cannot be checked until both exist, "
+        "and this test must not pass without them. See mc-5gbyxt."
+    )
+    for prefix, match in rules.items():
+        assert match.start() < docs_loop.start(), (
+            f"The '{prefix}' rule sits below `def docPrefixes`. Both rules "
+            "belong above the docs loop (mc-28l686). For docs/playtester/ that "
+            "is load-bearing: the 'docs/' entry returns 'docs' for the path "
+            "before any rule below the loop runs. See mc-5gbyxt."
+        )
+
+
+def test_mcp_game_server_case_sets_only_its_own_flag() -> None:
+    """GUARD, passes before and after the fix (mc-5gbyxt): the case stays narrow.
+
+    The new rules send persona and playtester-doc paths to this case. If it
+    also set serverChanged or clientChanged, those PRs would run the server and
+    client suites for a change that touches neither, which is what the
+    unmatched-file fallback did by accident. The regexes use a word boundary
+    and `=(?!=)` so that `mcpGameServerChanged` does not read as a
+    `serverChanged` assignment and a comparison does not read as an assignment.
+    Trailing `//` comments are dropped first, so prose that names a flag does
+    not read as one.
+    """
+    body = _case_blocks().get("mcp-game-server")
+    assert body is not None, (
+        "The category switch has no 'mcp-game-server' case, so a file "
+        "categorized that way would hit `default` and be reported as "
+        "unmatched. See mc-5gbyxt."
+    )
+    joined = "\n".join(re.sub(r"//.*$", "", ln) for ln in body)
+    assert re.search(r"\bmcpGameServerChanged\s*=\s*true\b", joined), (
+        "The 'mcp-game-server' case must set mcpGameServerChanged: it is the "
+        "flag that gates the MCP Game Server tests. See mc-5gbyxt."
+    )
+    assert not re.search(r"\bserverChanged\s*=(?!=)", joined), (
+        "The 'mcp-game-server' case must not set serverChanged. Persona and "
+        "playtester-doc PRs would run the server suites for a change that "
+        "touches none of the server. See mc-5gbyxt."
+    )
+    assert not re.search(r"\bclientChanged\s*=(?!=)", joined), (
+        "The 'mcp-game-server' case must not set clientChanged. Persona and "
+        "playtester-doc PRs would run the client suites for a change that "
+        "touches none of the client. See mc-5gbyxt."
+    )
+
+
+def test_no_wholesale_mcp_or_docs_rule_and_wiki_stays_above_the_docs_loop() -> None:
+    """GUARD, passes before and after the fix (mc-5gbyxt): the fix stays narrow.
+
+    Two neighbours the fix must leave alone. No rule may send all of mcp/ or
+    all of docs/ to 'mcp-game-server': that would run the MCP Game Server tests
+    for unrelated paths and stop docs-only PRs from skipping them. And the
+    docs/wiki/ rule must stay above the docs loop.
+    """
+    src = _categorize_source()
+    for prefix in ("mcp/", "docs/"):
+        wholesale = _prefix_rule(prefix, "mcp-game-server").search(src)
+        assert wholesale is None, (
+            f"categorize() sends all of '{prefix}' to 'mcp-game-server'. The "
+            "ruling is two narrow prefixes, mcp/personas/ and docs/playtester/. "
+            "A wholesale rule widens the MCP Game Server tests to unrelated "
+            "paths. See mc-5gbyxt."
+        )
+    docs_loop = _DOC_PREFIXES_DEF.search(src)
+    wiki = _prefix_rule("docs/wiki/", "wiki").search(src)
+    assert docs_loop is not None and wiki is not None, (
+        "categorize() must keep both its `docs/wiki/` rule and its "
+        "`def docPrefixes` line so the order between them can be checked. If "
+        "either was restructured, update this test. See mc-5gbyxt."
+    )
+    assert wiki.start() < docs_loop.start(), (
+        "The docs/wiki/ rule must stay above `def docPrefixes`. Below it, wiki "
+        "pages classify as 'docs', wikiChanged stops being set and the wiki "
+        "stops being rebuilt. See mc-5gbyxt."
+    )
