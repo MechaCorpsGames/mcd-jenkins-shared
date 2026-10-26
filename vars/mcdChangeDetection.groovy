@@ -316,6 +316,12 @@ def categorize(String filePath) {
     // Local dev tool, not deployed; tests run in the server pipeline.
     if (filePath.startsWith('Src/MCPGameServer/')) return 'mcp-game-server'
 
+    // Persona guard tests consume these packs and canonical playtester docs.
+    // Keep these above docPrefixes: packs otherwise fall through as unknown,
+    // and playtester docs are captured by the docs/ prefix.
+    if (filePath.startsWith('mcp/personas/')) return 'mcp-game-server'
+    if (filePath.startsWith('docs/playtester/')) return 'mcp-game-server'
+
     // Root build system. Without this the Makefile matches no rule, lands in
     // unmatchedFiles and reaches the same both-builds outcome through the
     // fallback. The fallback also logs it as "unmatched", which hides that this
